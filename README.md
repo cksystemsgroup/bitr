@@ -2,18 +2,18 @@
 
 **Hypothesis**: Do Bitvector Decision Diagrams (BVDDs) represent reasoning state efficiently and effectively enough to outperform the state of the art in SMT solving and bounded model checking on hardware and software verification benchmarks?
 
-Unlike [agent-sat](https://github.com/iliazintchenko/agent-sat), which demonstrated that AI agents can autonomously discover competitive solving techniques for a well-understood problem (MaxSAT), agent-bitr tests whether agents can build a competitive solver around a **novel, unproven data structure**. The question is not just "can agents build a solver?" but "do BVDDs — where the decision diagram IS the complete solver state — provide a fundamentally better representation than the separate clause databases and assignment trails of conventional CDCL(T) solvers?"
+Inspired by yet unlike [agent-sat](https://github.com/iliazintchenko/agent-sat), which aims at demonstrating that AI agents may autonomously discover competitive solving techniques for a well-understood problem (SAT), agent-bitr tests whether agents can build a competitive solver around a **novel, unproven data structure** encoded as agent skill. The question is not just "can agents build a solver?" but "do BVDDs — where the decision diagram IS the complete solver state — provide a unified representation of the usually separate clause databases and assignment trails of conventional CDCL(T) and DPLL(T) solvers and bounded model checkers?". Similar to [agent-sat](https://github.com/iliazintchenko/agent-sat), success is determined through benchmarking against existing state-of-the-art tools.
 
 ## What are BVDDs?
 
-BVDDs are decision diagrams with **256-bit bitmask edge labels** where:
+BVDDs are nested decision diagrams with **256-bit bitmask edge labels** where:
 
 - **Bitmask AND** is propagation (intersect feasible values)
 - **Bitmask OR** is resolution (merge conflicting edges)
 - **Empty bitmask** is a conflict (UNSAT)
 - Operations work on **bytes rather than bits**
 
-A single BVDD encodes the formula, the assignment trail, AND the learned clauses — all in one canonical structure. Algorithmic details are in an upcoming publication.
+A single BVDD encodes the formula, the assignment trail, AND the learned clauses — all in one incrementally canonical structure. Algorithmic details are in an upcoming publication.
 
 ## Architecture
 
