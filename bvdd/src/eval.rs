@@ -38,10 +38,67 @@ pub enum CompiledOp {
     Sext { src: u32, src_width: BvWidth },
 }
 
+/// Packed bytecode instruction — fixed 32 bytes for cache-friendly iteration.
+/// Encodes opcode + up to 3 register operands + pre-computed mask.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct PackedInst {
+    pub opcode: u8,     // OpCode discriminant
+    pub dst: u8,        // destination register
+    pub src1: u8,       // first source register (or var slot for LoadVar)
+    pub src2: u8,       // second source register
+    pub src3: u8,       // third source (ITE)
+    pub _pad: [u8; 3],
+    pub mask: u64,      // pre-computed width mask ((1<<width)-1 or u64::MAX)
+    pub imm: u64,       // immediate value (constants, slice params, arg_width mask)
+}
+
+/// Opcode constants for packed instructions
+#[allow(non_upper_case_globals)]
+pub mod opcode {
+    pub const Const: u8 = 0;
+    pub const LoadVar: u8 = 1;
+    pub const Add: u8 = 2;
+    pub const Sub: u8 = 3;
+    pub const Mul: u8 = 4;
+    pub const And: u8 = 5;
+    pub const Or: u8 = 6;
+    pub const Xor: u8 = 7;
+    pub const Not: u8 = 8;
+    pub const Neg: u8 = 9;
+    pub const Eq: u8 = 10;
+    pub const Neq: u8 = 11;
+    pub const Ult: u8 = 12;
+    pub const Ulte: u8 = 13;
+    pub const Sll: u8 = 14;
+    pub const Srl: u8 = 15;
+    pub const Sra: u8 = 16;
+    pub const Slt: u8 = 17;
+    pub const Slte: u8 = 18;
+    pub const Ite: u8 = 19;
+    pub const Slice: u8 = 20;
+    pub const Concat: u8 = 21;
+    pub const Sext: u8 = 22;
+    pub const Uext: u8 = 23;
+    pub const Udiv: u8 = 24;
+    pub const Urem: u8 = 25;
+    pub const Sdiv: u8 = 26;
+    pub const Srem: u8 = 27;
+    pub const Smod: u8 = 28;
+    pub const Redand: u8 = 29;
+    pub const Redor: u8 = 30;
+    pub const Redxor: u8 = 31;
+    pub const Uaddo: u8 = 32;
+    pub const Umulo: u8 = 33;
+    pub const Other: u8 = 255; // fallback
+}
+
 /// A compiled program ready for repeated evaluation
 #[derive(Debug)]
 pub struct CompiledProgram {
     pub instructions: Vec<Instruction>,
+    /// Packed bytecode for fast evaluation
+    packed: Vec<PackedInst>,
     /// Maps variable IDs to their slot index in the vars array
     pub var_slots: Vec<(u32, u32)>, // (var_id, slot_index)
     /// Number of variable slots
@@ -67,8 +124,10 @@ impl CompiledProgram {
         let mut var_slots: Vec<(u32, u32)> = compiler.var_to_slot.into_iter().collect();
         var_slots.sort_by_key(|&(vid, _)| vid);
 
+        let packed = pack_instructions(&compiler.instructions);
         CompiledProgram {
             instructions: compiler.instructions,
+            packed,
             var_slots,
             num_vars: compiler.next_slot,
             output_reg,
@@ -135,6 +194,79 @@ impl CompiledProgram {
         unsafe { *regs.get_unchecked(self.output_reg as usize) }
     }
 
+    /// Fast evaluation using packed bytecode. Pre-computed masks eliminate
+    /// per-instruction mask() calls. Fixed-size instructions improve cache locality.
+    #[inline]
+    pub fn eval_packed(&self, vars: &[u64], regs: &mut [u64]) -> u64 {
+        for inst in &self.packed {
+            let r1 = unsafe { *regs.get_unchecked(inst.src1 as usize) };
+            let val = match inst.opcode {
+                opcode::Const => inst.imm,
+                opcode::LoadVar => unsafe { *vars.get_unchecked(inst.src1 as usize) },
+                opcode::Add => r1.wrapping_add(unsafe { *regs.get_unchecked(inst.src2 as usize) }) & inst.mask,
+                opcode::Sub => r1.wrapping_sub(unsafe { *regs.get_unchecked(inst.src2 as usize) }) & inst.mask,
+                opcode::Mul => r1.wrapping_mul(unsafe { *regs.get_unchecked(inst.src2 as usize) }) & inst.mask,
+                opcode::And => r1 & unsafe { *regs.get_unchecked(inst.src2 as usize) } & inst.mask,
+                opcode::Or => (r1 | unsafe { *regs.get_unchecked(inst.src2 as usize) }) & inst.mask,
+                opcode::Xor => (r1 ^ unsafe { *regs.get_unchecked(inst.src2 as usize) }) & inst.mask,
+                opcode::Not => (!r1) & inst.mask,
+                opcode::Neg => r1.wrapping_neg() & inst.mask,
+                opcode::Eq => { let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) }; if r1 == r2 { 1 } else { 0 } }
+                opcode::Neq => { let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) }; if r1 != r2 { 1 } else { 0 } }
+                opcode::Ult => { let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) }; if r1 < r2 { 1 } else { 0 } }
+                opcode::Ulte => { let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) }; if r1 <= r2 { 1 } else { 0 } }
+                opcode::Sll => { let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) }; if r2 >= 64 { 0 } else { (r1 << r2) & inst.mask } }
+                opcode::Srl => { let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) }; if r2 >= 64 { 0 } else { (r1 >> r2) & inst.mask } }
+                opcode::Ite => {
+                    let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) };
+                    let r3 = unsafe { *regs.get_unchecked(inst.src3 as usize) };
+                    (if r1 != 0 { r2 } else { r3 }) & inst.mask
+                }
+                opcode::Concat => {
+                    let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) };
+                    // imm stores lo_width
+                    ((r1 << inst.imm) | r2) & inst.mask
+                }
+                opcode::Slice => {
+                    // imm stores (upper << 16) | lower
+                    let lower = inst.imm & 0xFFFF;
+                    let slice_mask = inst.mask; // pre-computed (1<<(upper-lower+1))-1
+                    (r1 >> lower) & slice_mask
+                }
+                opcode::Uext => r1 & inst.mask,
+                opcode::Sext => {
+                    // imm stores src_width
+                    sign_extend(r1, inst.imm as BvWidth) as u64 & inst.mask
+                }
+                opcode::Slt => {
+                    let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) };
+                    if sign_extend(r1, inst.imm as BvWidth) < sign_extend(r2, inst.imm as BvWidth) { 1 } else { 0 }
+                }
+                opcode::Slte => {
+                    let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) };
+                    if sign_extend(r1, inst.imm as BvWidth) <= sign_extend(r2, inst.imm as BvWidth) { 1 } else { 0 }
+                }
+                opcode::Sra => {
+                    let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) };
+                    if r2 >= inst.imm { if sign_extend(r1, inst.imm as BvWidth) < 0 { inst.mask } else { 0 } }
+                    else { (sign_extend(r1, inst.imm as BvWidth).wrapping_shr(r2 as u32) as u64) & inst.mask }
+                }
+                opcode::Redor => if r1 != 0 { 1 } else { 0 },
+                opcode::Redand => if r1 == inst.imm { 1 } else { 0 }, // imm = full_mask
+                opcode::Redxor => (r1.count_ones() % 2) as u64,
+                opcode::Udiv => { let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) }; (if r2 == 0 { inst.mask } else { r1 / r2 }) & inst.mask }
+                opcode::Urem => { let r2 = unsafe { *regs.get_unchecked(inst.src2 as usize) }; (if r2 == 0 { r1 } else { r1 % r2 }) & inst.mask }
+                _ => {
+                    // Fallback to the interpreted path for rare ops
+                    self.eval_into(vars, regs);
+                    return unsafe { *regs.get_unchecked(self.output_reg as usize) };
+                }
+            };
+            unsafe { *regs.get_unchecked_mut(inst.dst as usize) = val };
+        }
+        unsafe { *regs.get_unchecked(self.output_reg as usize) }
+    }
+
     /// Look up the slot index for a variable ID
     pub fn var_slot(&self, var_id: u32) -> Option<u32> {
         self.var_slots.iter().find(|&&(vid, _)| vid == var_id).map(|&(_, slot)| slot)
@@ -182,7 +314,7 @@ impl CompiledProgram {
                 slot_vals[outer_slot as usize] = outer_val;
 
                 if inner_slots.is_empty() {
-                    let val = self.eval_into(&slot_vals, &mut regs);
+                    let val = self.eval_packed(&slot_vals, &mut regs);
                     let check = mask_for_check(val, result_width);
                     if target.contains(check) {
                         return Some((slot_vals, val));
@@ -197,7 +329,7 @@ impl CompiledProgram {
 
                 // Enumerate all inner combinations
                 loop {
-                    let val = self.eval_into(&slot_vals, &mut regs);
+                    let val = self.eval_packed(&slot_vals, &mut regs);
                     let check = mask_for_check(val, result_width);
                     if target.contains(check) {
                         return Some((slot_vals, val));
@@ -332,6 +464,84 @@ impl<'a> Compiler<'a> {
 
 /// Mask a value to `width` bits
 /// Mask a value for checking against ValueSet (8-bit domain)
+/// Pack high-level instructions into flat bytecode
+fn pack_instructions(instructions: &[Instruction]) -> Vec<PackedInst> {
+    instructions.iter().map(|inst| {
+        let width_mask = if inst.width >= 64 { u64::MAX } else { (1u64 << inst.width) - 1 };
+        match &inst.op {
+            CompiledOp::Const(v) => PackedInst {
+                opcode: opcode::Const, dst: inst.dst as u8,
+                src1: 0, src2: 0, src3: 0, _pad: [0; 3],
+                mask: width_mask, imm: *v,
+            },
+            CompiledOp::LoadVar(slot) => PackedInst {
+                opcode: opcode::LoadVar, dst: inst.dst as u8,
+                src1: *slot as u8, src2: 0, src3: 0, _pad: [0; 3],
+                mask: width_mask, imm: 0,
+            },
+            CompiledOp::Unary { op, src } => {
+                let opc = match op {
+                    OpKind::Not => opcode::Not, OpKind::Neg => opcode::Neg,
+                    OpKind::Redand => opcode::Redand, OpKind::Redor => opcode::Redor,
+                    OpKind::Redxor => opcode::Redxor, OpKind::Uext => opcode::Uext,
+                    _ => opcode::Other,
+                };
+                PackedInst {
+                    opcode: opc, dst: inst.dst as u8,
+                    src1: *src as u8, src2: 0, src3: 0, _pad: [0; 3],
+                    mask: width_mask, imm: width_mask, // imm=full mask for Redand
+                }
+            }
+            CompiledOp::Binary { op, lhs, rhs, lhs_width } => {
+                let opc = match op {
+                    OpKind::Add => opcode::Add, OpKind::Sub => opcode::Sub,
+                    OpKind::Mul => opcode::Mul, OpKind::And => opcode::And,
+                    OpKind::Or => opcode::Or, OpKind::Xor => opcode::Xor,
+                    OpKind::Eq => opcode::Eq, OpKind::Neq => opcode::Neq,
+                    OpKind::Ult => opcode::Ult, OpKind::Ulte => opcode::Ulte,
+                    OpKind::Slt => opcode::Slt, OpKind::Slte => opcode::Slte,
+                    OpKind::Sll => opcode::Sll, OpKind::Srl => opcode::Srl,
+                    OpKind::Sra => opcode::Sra,
+                    OpKind::Udiv => opcode::Udiv, OpKind::Urem => opcode::Urem,
+                    OpKind::Sdiv => opcode::Sdiv, OpKind::Srem => opcode::Srem,
+                    OpKind::Smod => opcode::Smod,
+                    OpKind::Uaddo => opcode::Uaddo, OpKind::Umulo => opcode::Umulo,
+                    _ => opcode::Other,
+                };
+                PackedInst {
+                    opcode: opc, dst: inst.dst as u8,
+                    src1: *lhs as u8, src2: *rhs as u8, src3: 0, _pad: [0; 3],
+                    mask: width_mask, imm: *lhs_width as u64,
+                }
+            }
+            CompiledOp::Ternary { op: _, a, b, c } => PackedInst {
+                opcode: opcode::Ite, dst: inst.dst as u8,
+                src1: *a as u8, src2: *b as u8, src3: *c as u8, _pad: [0; 3],
+                mask: width_mask, imm: 0,
+            },
+            CompiledOp::Slice { src, upper, lower } => {
+                let slice_width = upper - lower + 1;
+                let slice_mask = if slice_width >= 64 { u64::MAX } else { (1u64 << slice_width) - 1 };
+                PackedInst {
+                    opcode: opcode::Slice, dst: inst.dst as u8,
+                    src1: *src as u8, src2: 0, src3: 0, _pad: [0; 3],
+                    mask: slice_mask, imm: *lower as u64,
+                }
+            }
+            CompiledOp::Concat { hi, lo, lo_width } => PackedInst {
+                opcode: opcode::Concat, dst: inst.dst as u8,
+                src1: *hi as u8, src2: *lo as u8, src3: 0, _pad: [0; 3],
+                mask: width_mask, imm: *lo_width as u64,
+            },
+            CompiledOp::Sext { src, src_width } => PackedInst {
+                opcode: opcode::Sext, dst: inst.dst as u8,
+                src1: *src as u8, src2: 0, src3: 0, _pad: [0; 3],
+                mask: width_mask, imm: *src_width as u64,
+            },
+        }
+    }).collect()
+}
+
 #[inline(always)]
 pub fn mask_for_check(val: u64, width: BvWidth) -> u8 {
     if width <= 8 {

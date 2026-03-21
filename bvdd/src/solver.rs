@@ -631,7 +631,7 @@ impl<'a> SolverContext<'a> {
 
         // Iterative enumeration using counter increment
         loop {
-            let val = prog.eval_into(slot_vals, regs);
+            let val = prog.eval_packed(slot_vals, regs);
             let check_val = mask_for_check(val, width);
             if s.contains(check_val) {
                 // SAT — record witness
