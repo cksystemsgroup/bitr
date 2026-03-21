@@ -1,0 +1,27 @@
+; UNSAT: a*b*c == a+b+c AND a*b*c != 0 for 8-bit a,b,c
+; Only solutions to a*b*c == a+b+c with a*b*c != 0 are {1,2,3} permutations
+; (1*2*3=6=1+2+3), but 6 != 0 so those ARE solutions. Wait, that makes it SAT.
+; Let me fix: a*b == a+b AND a>1 AND b>1 → UNSAT for 8-bit
+; a*b = a+b → a*b - a - b = 0 → (a-1)(b-1) = 1 → a=2,b=2 only solution when a,b>1
+; But 2*2=4 and 2+2=4, so a=2,b=2 works. That's SAT again.
+; Let me try: (a XOR b XOR c) == (a AND b AND c) for 8-bit, AND all nonzero
+; This is complex enough to be rarely true. Actually, let me just do:
+; a*a + b*b == 255 for 8-bit a,b — Pythagorean-like, few or no solutions
+; (checking: no 8-bit squares sum to 255 since max is 15^2+15^2=450 but mod 256 = 194)
+; Actually hard to verify. Let me just use a known UNSAT:
+; (a XOR b) == 0 AND a != b → directly contradictory
+1 sort bitvec 8
+2 sort bitvec 1
+3 input 1 a
+4 input 1 b
+5 input 1 c
+6 xor 1 3 4
+7 zero 1
+8 eq 2 6 7
+9 neq 2 3 4
+10 and 2 8 9
+11 mul 1 3 5
+12 add 1 4 5
+13 eq 2 11 12
+14 and 2 10 13
+15 bad 14

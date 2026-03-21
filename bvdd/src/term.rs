@@ -31,6 +31,10 @@ pub struct TermTable {
     terms: Vec<Term>,
     /// Unique table: (kind, width) -> TermId
     unique: HashMap<(TermKind, BvWidth), TermId>,
+    /// Substitution cache: (term, var, val) -> result
+    subst_cache: HashMap<(TermId, u32, u64), TermId>,
+    /// Term-for-term substitution cache
+    subst_term_cache: HashMap<(TermId, u32, TermId), TermId>,
 }
 
 impl Default for TermTable {
@@ -42,7 +46,15 @@ impl TermTable {
         TermTable {
             terms: Vec::new(),
             unique: HashMap::new(),
+            subst_cache: HashMap::new(),
+            subst_term_cache: HashMap::new(),
         }
+    }
+
+    /// Clear substitution caches (e.g., between BMC steps)
+    pub fn clear_subst_cache(&mut self) {
+        self.subst_cache.clear();
+        self.subst_term_cache.clear();
     }
 
     pub fn get(&self, id: TermId) -> &Term {
@@ -116,8 +128,19 @@ impl TermTable {
     }
 
     /// Substitute variable `var` with constant `val` and fold constants.
-    /// Returns a new (possibly simplified) term.
+    /// Returns a new (possibly simplified) term. Results are memoized.
     pub fn subst_and_fold(&mut self, id: TermId, var: u32, val: u64) -> TermId {
+        // Cache lookup
+        let cache_key = (id, var, val);
+        if let Some(&cached) = self.subst_cache.get(&cache_key) {
+            return cached;
+        }
+        let result = self.subst_and_fold_inner(id, var, val);
+        self.subst_cache.insert(cache_key, result);
+        result
+    }
+
+    fn subst_and_fold_inner(&mut self, id: TermId, var: u32, val: u64) -> TermId {
         let term = self.get(id).clone();
         match &term.kind {
             TermKind::Const(_) => id,
@@ -161,6 +184,16 @@ impl TermTable {
     /// Substitute variable `var` with another term `replacement`.
     /// If the replacement causes all args to become constants, folds the result.
     pub fn subst_term(&mut self, id: TermId, var: u32, replacement: TermId) -> TermId {
+        let cache_key = (id, var, replacement);
+        if let Some(&cached) = self.subst_term_cache.get(&cache_key) {
+            return cached;
+        }
+        let result = self.subst_term_inner(id, var, replacement);
+        self.subst_term_cache.insert(cache_key, result);
+        result
+    }
+
+    fn subst_term_inner(&mut self, id: TermId, var: u32, replacement: TermId) -> TermId {
         let term = self.get(id).clone();
         match &term.kind {
             TermKind::Const(_) => id,

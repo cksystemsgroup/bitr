@@ -511,23 +511,25 @@ impl<'a> SolverContext<'a> {
             return self.theory_resolve_ground(eval_bvc, s);
         }
 
-        // Try compiled multi-variable evaluation if total domain is small
+        // Try compiled multi-variable evaluation if total domain fits in budget
         let total_domain: u128 = vars.iter()
             .map(|&(_, w)| if w >= 64 { u128::MAX } else { 1u128 << w })
             .fold(1u128, |acc, d| acc.saturating_mul(d));
 
-        if total_domain <= 65536 {
+        if total_domain <= (1u128 << 28) {
             let prog = CompiledProgram::compile(self.tt, term);
-            // Check all variable slots are available
             let slots: Vec<(u32, u32, u64)> = vars.iter().filter_map(|&(vid, vw)| {
                 let domain = if vw >= 64 { u64::MAX } else { 1u64 << vw };
                 prog.var_slot(vid).map(|slot| (vid, slot, domain))
             }).collect();
 
             if slots.len() == vars.len() {
-                // All variables have slots — use compiled evaluator
+                // Flat iterative multi-variable compiled evaluation
                 let mut slot_vals = vec![0u64; prog.num_vars as usize];
-                let result = self.compiled_multi_eval(&prog, &slots, 0, &mut slot_vals, s, width);
+                let mut regs = vec![0u64; prog.num_regs as usize];
+                let result = self.compiled_multi_eval_flat(
+                    &prog, &slots, &mut slot_vals, &mut regs, s, width,
+                );
                 return result;
             }
         }
@@ -595,22 +597,33 @@ impl<'a> SolverContext<'a> {
         }
     }
 
-    /// Multi-variable compiled evaluation: recursively enumerate variable slots.
-    fn compiled_multi_eval(
+    /// Flat iterative multi-variable compiled evaluation.
+    /// Uses pre-allocated register buffer and counter array to avoid recursion.
+    fn compiled_multi_eval_flat(
         &mut self,
         prog: &CompiledProgram,
         slots: &[(u32, u32, u64)], // (var_id, slot_idx, domain_size)
-        slot_pos: usize,
         slot_vals: &mut [u64],
+        regs: &mut [u64],
         s: ValueSet,
         width: u16,
     ) -> BvddId {
-        if slot_pos >= slots.len() {
-            // All variables assigned — evaluate
-            let val = prog.eval(slot_vals);
+        let n = slots.len();
+        if n == 0 {
+            return self.mgr.false_terminal();
+        }
+
+        // Initialize all slot values to 0
+        for &(_, slot_idx, _) in slots {
+            slot_vals[slot_idx as usize] = 0;
+        }
+
+        // Iterative enumeration using counter increment
+        loop {
+            let val = prog.eval_into(slot_vals, regs);
             let check_val = mask_for_check(val, width);
             if s.contains(check_val) {
-                // Record witness assignments
+                // SAT — record witness
                 for &(var_id, slot_idx, _) in slots {
                     self.witness.insert(var_id, slot_vals[slot_idx as usize]);
                 }
@@ -618,17 +631,27 @@ impl<'a> SolverContext<'a> {
                 self.sat_witnesses += 1;
                 return self.mgr.make_terminal(const_bvc, true, true);
             }
-            return self.mgr.false_terminal();
-        }
 
-        let (_var_id, slot_idx, domain_size) = slots[slot_pos];
-        for d in 0..domain_size {
-            slot_vals[slot_idx as usize] = d;
-            let result = self.compiled_multi_eval(prog, slots, slot_pos + 1, slot_vals, s, width);
-            if self.mgr.get(result).can_be_true && self.mgr.get(result).is_ground {
-                return result; // Early SAT
+            // Increment: advance the rightmost (innermost) counter
+            let mut carry = true;
+            for i in (0..n).rev() {
+                if carry {
+                    let (_, slot_idx, domain_size) = slots[i];
+                    let next = slot_vals[slot_idx as usize] + 1;
+                    if next < domain_size {
+                        slot_vals[slot_idx as usize] = next;
+                        carry = false;
+                    } else {
+                        slot_vals[slot_idx as usize] = 0;
+                        // carry propagates to next variable
+                    }
+                }
+            }
+            if carry {
+                break; // All combinations exhausted
             }
         }
+
         self.mgr.false_terminal()
     }
 

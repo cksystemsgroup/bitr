@@ -137,8 +137,9 @@ pub fn bmc_check(
         }
         state_current = new_state;
 
-        // Clear computed cache between steps to avoid stale results
+        // Clear caches between steps
         mgr.cache_clear();
+        tt.clear_subst_cache();
     }
 
     // Reached max bound without finding SAT
