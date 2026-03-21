@@ -80,47 +80,47 @@ Phases 0–9 complete. Core solver operational on combinational, sequential, and
 | SW BV solved | — | — | — |
 | Total time (s) | — | — | — |
 
-### BVDD Component Status
+### BVDD Implementation Status
 
 <!-- PERF_TABLE_START — updated automatically during optimization rounds -->
 
-| Component | Status | Size/Space | Throughput | Notes |
-|-----------|--------|-----------|------------|-------|
-| **ValueSet** (256-bit bitmask) | Complete | 32 B per set | branchless AND/OR/NOT | `#[inline]` on hot paths; `[u64; 4]` layout |
-| **TermTable** (hash-consed DAG) | Complete | 4 B per TermId | — | Memoized `subst_and_fold` + `subst_term` caches |
-| **ConstraintTable** | Complete | 4 B per ConstraintId | — | Hash-consed; Restrict with short-circuit AND/OR |
-| **BvcManager** | Complete | 4 B per BvcId | — | Structural + lifted ops; fresh var allocation |
-| **BvddManager** | Complete | 4 B per BvddId | — | Unique table; edge merging; 64K computed cache |
-| **Compiled evaluator** | Complete | stack-alloc ≤32 regs | **81M eval/s** (1-var 28-bit) | `unsafe get_unchecked`; `eval_into` pre-alloc |
-| | | | **67M eval/s** (1-var 24-bit) | |
-| | | | **35M eval/s** (3-var 8-bit) | More complex term trees run slower per eval |
-| **Solver (Canonicalize/Solve)** | Complete | — | — | 4-stage theory resolution cascade |
-| **Boolean decomposition** | Complete | — | — | Stage 1: branch on comparison subterms |
-| **Generalized blast** | Complete | — | budget 2^28 | Stage 2: narrowest-var-first; compiled multi-eval |
-| **Byte-blast oracle** | Complete | — | — | Stage 3: MSB-byte split; adaptive 25% bailout |
-| **SMT oracle** | Complete | cached | — | Stage 4: bitwuzla/z3 subprocess; SMT-LIB2 gen |
-| **HSC** (hierarchical cascade) | Complete | — | — | MSB→LSB 8-bit slice decomposition |
-| **BTOR2 parser** | Complete | — | — | All operators; sorts; negated refs |
-| **BTOR2→BVC lifter** | Complete | — | — | Structural/lifted ops; slice/ext; array ROW |
-| **Array support** | Complete | — | — | READ-over-WRITE → ITE chain expansion |
-| **BMC loop** | Complete | — | — | Init/next substitution (const + symbolic) |
-| **Counterexample extraction** | Complete | — | — | Witness from BVDD + blast assignments |
+The table below tracks each BVDD concept, its DPLL(T) analogue, and measured performance.
 
-**Performance benchmarks** (exhaustive UNSAT, `x²+1 ≡ 0 mod 2^n`, Apple Silicon):
+| BVDD Concept | DPLL(T) Analogue | Status | Space | Notes |
+|---|---|---|---|---|
+| **Value sets** — 256-bit bitmask edge labels | Literal watches / domain | Done | 32 B | `[u64; 4]`; branchless AND/OR/NOT |
+| **BVDD nodes** — decision DAG with value-set edges | Clause database + trail | Done | 4 B id | Hash-consed unique table; arena-allocated |
+| **Edge merging** — OR value sets of same-child edges | Clause subsumption | Done | — | Reduces branching factor at construction |
+| **BVCs** — constrained symbolic values at terminals | Theory atoms | Done | 4 B id | (term, constraint) pairs |
+| **Hash-consed terms** — symbolic expression DAG | Term algebra | Done | 4 B id | Memoized substitution caches |
+| **Constraints** — Boolean formulas over predicates | Learned clauses | Done | 4 B id | Hash-consed; short-circuit Restrict |
+| **HSC** — hierarchical 8-bit slice cascade | Bit-blasting to SAT | Done | — | MSB→LSB cascade for variables > 8 bits |
+| **Computed cache** — memoize Solve(node, valueset) | Conflict cache | Done | 64K entries | Direct-mapped; cleared between BMC steps |
+| **Canonicalize/Solve** — reducing BVDD to canonical form decides SAT | DPLL(T) search | Done | — | Ground check → terminal → decision traversal |
+| **Decide/Restrict** — partition domain by predicate signatures | Decision + BCP | Done | — | Coarsest partition; short-circuit AND/OR |
+| **Theory resolution** — 4-stage cascade when no predicates remain | Theory solver | Done | — | See cascade table below |
 
-| Width | Domain | Time | Eval/s |
-|-------|--------|------|--------|
+**Theory resolution cascade** (invoked when all constraints reduce to TRUE/FALSE):
+
+| Stage | Strategy | Budget | Throughput |
+|---|---|---|---|
+| 1. Boolean decomposition | Branch on 1-bit comparison subterms | — | — |
+| 2. Generalized blast | Enumerate narrowest variable first (compiled evaluator) | 2^28 domain | **81M eval/s** |
+| 3. Byte-blast | Split widest variable's MSB byte; enumerate 256 × LSB | depth 4; 25% bailout | — |
+| 4. Theory oracle | External SMT solver (bitwuzla/z3) on residual | 5s per call | cached |
+
+**Exhaustive search performance** (UNSAT `x²+1 ≡ 0 mod 2^n`, compiled evaluator, Apple Silicon):
+
+| Width | Domain | Wall time | Eval throughput |
+|---|---|---|---|
 | 12-bit | 4K | <0.01s | — |
-| 20-bit | 1M | 0.06s | ~17M |
-| 24-bit | 16M | 0.24s | ~67M |
-| 28-bit | 268M | 3.3s | ~81M |
+| 20-bit | 1M | 0.06s | ~17M/s |
+| 24-bit | 16M | 0.24s | ~67M/s |
+| 28-bit | 268M | 3.3s | ~81M/s |
+| 2 × 10-bit | 1M | 0.06s | ~17M/s |
+| 3 × 8-bit | 16M | 0.46s | ~35M/s |
 
-| Multi-var benchmark | Variables | Domain | Time |
-|---------------------|-----------|--------|------|
-| two_var_10 (UNSAT) | 2 × 10-bit | 1M | 0.06s |
-| three_var_8 (UNSAT) | 3 × 8-bit | 16M | 0.46s |
-
-**Test suite**: 87 tests, 0 clippy warnings, 16/16 tiny benchmarks correct.
+**Test suite**: 87 unit tests, 16/16 benchmarks correct (combinational + sequential + array).
 
 <!-- PERF_TABLE_END -->
 
