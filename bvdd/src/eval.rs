@@ -78,36 +78,60 @@ impl CompiledProgram {
     /// Execute the compiled program with given variable values.
     /// `vars` must have length == num_vars, indexed by slot order.
     pub fn eval(&self, vars: &[u64]) -> u64 {
-        let mut regs = vec![0u64; self.num_regs as usize];
+        // Use stack allocation for small register counts (common case)
+        if self.num_regs <= 32 {
+            let mut regs = [0u64; 32];
+            self.eval_into(vars, &mut regs)
+        } else {
+            let mut regs = vec![0u64; self.num_regs as usize];
+            self.eval_into(vars, &mut regs)
+        }
+    }
+
+    /// Execute into a pre-allocated register buffer. Avoids allocation in hot loops.
+    #[inline]
+    pub fn eval_into(&self, vars: &[u64], regs: &mut [u64]) -> u64 {
         for inst in &self.instructions {
             let val = match &inst.op {
                 CompiledOp::Const(v) => *v,
-                CompiledOp::LoadVar(slot) => vars[*slot as usize],
+                CompiledOp::LoadVar(slot) => unsafe { *vars.get_unchecked(*slot as usize) },
                 CompiledOp::Unary { op, src } => {
-                    eval_unary(*op, regs[*src as usize], inst.width)
+                    eval_unary(*op, unsafe { *regs.get_unchecked(*src as usize) }, inst.width)
                 }
                 CompiledOp::Binary { op, lhs, rhs, lhs_width } => {
-                    eval_binary(*op, regs[*lhs as usize], regs[*rhs as usize], *lhs_width, inst.width)
+                    eval_binary(
+                        *op,
+                        unsafe { *regs.get_unchecked(*lhs as usize) },
+                        unsafe { *regs.get_unchecked(*rhs as usize) },
+                        *lhs_width, inst.width,
+                    )
                 }
                 CompiledOp::Ternary { op, a, b, c } => {
-                    eval_ternary(*op, regs[*a as usize], regs[*b as usize], regs[*c as usize], inst.width)
+                    eval_ternary(
+                        *op,
+                        unsafe { *regs.get_unchecked(*a as usize) },
+                        unsafe { *regs.get_unchecked(*b as usize) },
+                        unsafe { *regs.get_unchecked(*c as usize) },
+                        inst.width,
+                    )
                 }
                 CompiledOp::Slice { src, upper, lower } => {
-                    let v = regs[*src as usize];
+                    let v = unsafe { *regs.get_unchecked(*src as usize) };
                     mask((v >> lower) & mask(u64::MAX, upper - lower + 1), inst.width)
                 }
                 CompiledOp::Concat { hi, lo, lo_width } => {
-                    let h = regs[*hi as usize];
-                    let l = regs[*lo as usize];
+                    let h = unsafe { *regs.get_unchecked(*hi as usize) };
+                    let l = unsafe { *regs.get_unchecked(*lo as usize) };
                     mask((h << lo_width) | l, inst.width)
                 }
                 CompiledOp::Sext { src, src_width } => {
-                    mask(sign_extend(regs[*src as usize], *src_width) as u64, inst.width)
+                    let v = unsafe { *regs.get_unchecked(*src as usize) };
+                    mask(sign_extend(v, *src_width) as u64, inst.width)
                 }
             };
-            regs[inst.dst as usize] = val;
+            unsafe { *regs.get_unchecked_mut(inst.dst as usize) = val };
         }
-        regs[self.output_reg as usize]
+        unsafe { *regs.get_unchecked(self.output_reg as usize) }
     }
 
     /// Look up the slot index for a variable ID
@@ -222,11 +246,13 @@ impl<'a> Compiler<'a> {
 }
 
 /// Mask a value to `width` bits
+#[inline(always)]
 fn mask(val: u64, width: BvWidth) -> u64 {
     if width >= 64 { val } else { val & ((1u64 << width) - 1) }
 }
 
 /// Sign-extend a `width`-bit value to i64
+#[inline(always)]
 fn sign_extend(val: u64, width: BvWidth) -> i64 {
     if width == 0 { return 0; }
     if width >= 64 { return val as i64; }
@@ -238,6 +264,7 @@ fn sign_extend(val: u64, width: BvWidth) -> i64 {
     }
 }
 
+#[inline]
 fn eval_unary(op: OpKind, a: u64, width: BvWidth) -> u64 {
     let m = |v: u64| mask(v, width);
     match op {
@@ -254,6 +281,7 @@ fn eval_unary(op: OpKind, a: u64, width: BvWidth) -> u64 {
     }
 }
 
+#[inline]
 fn eval_binary(op: OpKind, a: u64, b: u64, arg_width: BvWidth, width: BvWidth) -> u64 {
     let m = |v: u64| mask(v, width);
     match op {

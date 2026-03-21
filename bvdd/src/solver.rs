@@ -472,9 +472,10 @@ impl<'a> SolverContext<'a> {
 
             if let Some(slot_idx) = prog.var_slot(var_id) {
                 let mut slot_vars = vec![0u64; prog.num_vars as usize];
+                let mut regs = vec![0u64; prog.num_regs as usize];
                 for d in 0..domain_size {
                     slot_vars[slot_idx as usize] = d;
-                    let val = prog.eval(&slot_vars);
+                    let val = prog.eval_into(&slot_vars, &mut regs);
                     let check_val = mask_for_check(val, width);
                     if s.contains(check_val) {
                         self.witness.insert(var_id, d);

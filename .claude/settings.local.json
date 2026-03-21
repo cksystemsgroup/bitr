@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(for i:*)",
+      "Bash(do time:*)"
     ]
   }
 }

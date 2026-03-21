@@ -1,0 +1,13 @@
+; SAT: (a * b + c) == 0xFF for 8-bit a, b, c
+; Domain: 256^3 = 16M — tests compiled blast performance
+; Expected: SAT (many solutions, e.g. a=1, b=255, c=0)
+1 sort bitvec 8
+2 sort bitvec 1
+3 input 1 a
+4 input 1 b
+5 input 1 c
+6 mul 1 3 4
+7 add 1 6 5
+8 constd 1 255
+9 eq 2 7 8
+10 bad 9

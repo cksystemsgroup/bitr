@@ -37,6 +37,7 @@ impl ValueSet {
     }
 
     /// Intersection (propagation)
+    #[inline]
     pub fn and(self, other: ValueSet) -> ValueSet {
         ValueSet {
             bits: [
@@ -49,6 +50,7 @@ impl ValueSet {
     }
 
     /// Union (resolution)
+    #[inline]
     pub fn or(self, other: ValueSet) -> ValueSet {
         ValueSet {
             bits: [
@@ -70,15 +72,18 @@ impl ValueSet {
         self.bits.iter().map(|w| w.count_ones()).sum()
     }
 
+    #[inline]
     pub fn is_empty(self) -> bool {
         self.bits == [0; 4]
     }
 
+    #[inline]
     pub fn is_full(self) -> bool {
         self.bits == [u64::MAX; 4]
     }
 
     /// Check if value `v` is in the set
+    #[inline]
     pub fn contains(self, v: u8) -> bool {
         let word = (v / 64) as usize;
         let bit = v % 64;

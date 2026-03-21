@@ -1,0 +1,11 @@
+; Find x,y such that x + y == 0xDEAD for 16-bit variables
+; Domain: 2^32 total — must use compiled evaluator
+; Expected: SAT
+1 sort bitvec 16
+2 sort bitvec 1
+3 input 1 x
+4 input 1 y
+5 add 1 3 4
+6 constd 1 57005
+7 eq 2 5 6
+8 bad 7
