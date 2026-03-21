@@ -71,7 +71,7 @@ python3 scripts/compare.py results/bitr.csv results/bitwuzla.csv
 
 ## Current Status
 
-Phase 0: Project scaffolding complete. BTOR2 parser and core type stubs implemented. Awaiting Phase 1 implementation (value sets + terms).
+Phases 0–9 complete. Core solver operational on combinational, sequential, and array benchmarks. 16/16 tiny benchmarks correct. Optimization ongoing.
 
 | Metric | bitr | bitwuzla | rIC3 |
 |--------|------|----------|------|
@@ -79,6 +79,50 @@ Phase 0: Project scaffolding complete. BTOR2 parser and core type stubs implemen
 | HW Array solved | — | — | — |
 | SW BV solved | — | — | — |
 | Total time (s) | — | — | — |
+
+### BVDD Component Status
+
+<!-- PERF_TABLE_START — updated automatically during optimization rounds -->
+
+| Component | Status | Size/Space | Throughput | Notes |
+|-----------|--------|-----------|------------|-------|
+| **ValueSet** (256-bit bitmask) | Complete | 32 B per set | branchless AND/OR/NOT | `#[inline]` on hot paths; `[u64; 4]` layout |
+| **TermTable** (hash-consed DAG) | Complete | 4 B per TermId | — | Memoized `subst_and_fold` + `subst_term` caches |
+| **ConstraintTable** | Complete | 4 B per ConstraintId | — | Hash-consed; Restrict with short-circuit AND/OR |
+| **BvcManager** | Complete | 4 B per BvcId | — | Structural + lifted ops; fresh var allocation |
+| **BvddManager** | Complete | 4 B per BvddId | — | Unique table; edge merging; 64K computed cache |
+| **Compiled evaluator** | Complete | stack-alloc ≤32 regs | **81M eval/s** (1-var 28-bit) | `unsafe get_unchecked`; `eval_into` pre-alloc |
+| | | | **67M eval/s** (1-var 24-bit) | |
+| | | | **35M eval/s** (3-var 8-bit) | More complex term trees run slower per eval |
+| **Solver (Canonicalize/Solve)** | Complete | — | — | 4-stage theory resolution cascade |
+| **Boolean decomposition** | Complete | — | — | Stage 1: branch on comparison subterms |
+| **Generalized blast** | Complete | — | budget 2^28 | Stage 2: narrowest-var-first; compiled multi-eval |
+| **Byte-blast oracle** | Complete | — | — | Stage 3: MSB-byte split; adaptive 25% bailout |
+| **SMT oracle** | Complete | cached | — | Stage 4: bitwuzla/z3 subprocess; SMT-LIB2 gen |
+| **HSC** (hierarchical cascade) | Complete | — | — | MSB→LSB 8-bit slice decomposition |
+| **BTOR2 parser** | Complete | — | — | All operators; sorts; negated refs |
+| **BTOR2→BVC lifter** | Complete | — | — | Structural/lifted ops; slice/ext; array ROW |
+| **Array support** | Complete | — | — | READ-over-WRITE → ITE chain expansion |
+| **BMC loop** | Complete | — | — | Init/next substitution (const + symbolic) |
+| **Counterexample extraction** | Complete | — | — | Witness from BVDD + blast assignments |
+
+**Performance benchmarks** (exhaustive UNSAT, `x²+1 ≡ 0 mod 2^n`, Apple Silicon):
+
+| Width | Domain | Time | Eval/s |
+|-------|--------|------|--------|
+| 12-bit | 4K | <0.01s | — |
+| 20-bit | 1M | 0.06s | ~17M |
+| 24-bit | 16M | 0.24s | ~67M |
+| 28-bit | 268M | 3.3s | ~81M |
+
+| Multi-var benchmark | Variables | Domain | Time |
+|---------------------|-----------|--------|------|
+| two_var_10 (UNSAT) | 2 × 10-bit | 1M | 0.06s |
+| three_var_8 (UNSAT) | 3 × 8-bit | 16M | 0.46s |
+
+**Test suite**: 87 tests, 0 clippy warnings, 16/16 tiny benchmarks correct.
+
+<!-- PERF_TABLE_END -->
 
 ## Agent-Driven Development
 
