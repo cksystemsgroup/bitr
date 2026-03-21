@@ -105,20 +105,20 @@ The table below tracks each BVDD concept, its DPLL(T) analogue, and measured per
 | Stage | Strategy | Budget | Throughput |
 |---|---|---|---|
 | 1. Boolean decomposition | Branch on 1-bit comparison subterms | — | — |
-| 2. Generalized blast | Enumerate narrowest variable first (compiled evaluator) | 2^28 domain | **81M eval/s** |
+| 2. Generalized blast | Enumerate narrowest variable first (compiled evaluator) | 2^28 domain | **206M eval/s** (parallel) |
 | 3. Byte-blast | Split widest variable's MSB byte; enumerate 256 × LSB | depth 4; 25% bailout | — |
 | 4. Theory oracle | External SMT solver (bitwuzla/z3) on residual | 5s per call | cached |
 
-**Exhaustive search performance** (UNSAT `x²+1 ≡ 0 mod 2^n`, compiled evaluator, Apple Silicon):
+**Exhaustive search performance** (UNSAT `x²+1 ≡ 0 mod 2^n`, compiled evaluator, 8-core Apple Silicon):
 
-| Width | Domain | Wall time | Eval throughput |
-|---|---|---|---|
-| 12-bit | 4K | <0.01s | — |
-| 20-bit | 1M | 0.06s | ~17M/s |
-| 24-bit | 16M | 0.24s | ~67M/s |
-| 28-bit | 268M | 3.3s | ~81M/s |
-| 2 × 10-bit | 1M | 0.06s | ~17M/s |
-| 3 × 8-bit | 16M | 0.46s | ~35M/s |
+| Width | Domain | Wall time | Eval throughput | Parallelism |
+|---|---|---|---|---|
+| 12-bit | 4K | <0.01s | — | sequential |
+| 20-bit | 1M | 0.04s | ~25M/s | sequential |
+| 24-bit | 16M | 0.27s | ~59M/s | parallel (8 cores) |
+| 28-bit | 268M | 1.3s | **206M/s** | parallel (8 cores) |
+| 2 × 10-bit | 1M | 0.04s | ~25M/s | sequential |
+| 3 × 8-bit | 16M | 0.36s | ~44M/s | parallel (8 cores) |
 
 **Test suite**: 87 unit tests, 16/16 benchmarks correct (combinational + sequential + array).
 

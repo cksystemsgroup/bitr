@@ -111,7 +111,7 @@ pub fn hsc_make_constant(
 /// Compute the number of cascade levels for a given width
 pub fn hsc_levels(width: BvWidth) -> u32 {
     if width == 0 { 0 }
-    else { ((width as u32) + 7) / 8 }
+    else { (width as u32).div_ceil(8) }
 }
 
 #[cfg(test)]

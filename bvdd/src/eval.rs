@@ -6,6 +6,7 @@
 
 use crate::types::{TermId, OpKind, BvWidth};
 use crate::term::{TermTable, TermKind};
+use crate::valueset::ValueSet;
 
 /// A single instruction in the compiled program
 #[derive(Debug, Clone)]
@@ -138,6 +139,90 @@ impl CompiledProgram {
     pub fn var_slot(&self, var_id: u32) -> Option<u32> {
         self.var_slots.iter().find(|&&(vid, _)| vid == var_id).map(|&(_, slot)| slot)
     }
+
+    /// Parallel exhaustive search: find any variable assignment where the
+    /// output value is in the target set. Splits the outermost variable
+    /// into chunks across threads using rayon. Returns Some((slot_vals, output_val))
+    /// on SAT, None on UNSAT.
+    ///
+    /// `slots`: (var_id, slot_idx, domain_size) for each variable to enumerate.
+    pub fn parallel_search(
+        &self,
+        slots: &[(u32, u32, u64)],
+        target: ValueSet,
+        result_width: BvWidth,
+    ) -> Option<(Vec<u64>, u64)> {
+        use rayon::prelude::*;
+
+        if slots.is_empty() {
+            return None;
+        }
+
+        let (_, outer_slot, outer_domain) = slots[0];
+        let inner_slots = &slots[1..];
+
+        // Inner domain size per outer value
+        let inner_domain: u64 = inner_slots.iter()
+            .map(|&(_, _, d)| d)
+            .product::<u64>()
+            .max(1);
+
+        // Chunk size: each chunk should do ~256K evaluations for good granularity
+        let chunk_size = (256 * 1024u64 / inner_domain).max(1).min(outer_domain);
+        let num_chunks = outer_domain.div_ceil(chunk_size);
+
+        let found = (0..num_chunks).into_par_iter().find_map_any(|chunk_idx| {
+            let start = chunk_idx * chunk_size;
+            let end = (start + chunk_size).min(outer_domain);
+
+            let mut slot_vals = vec![0u64; self.num_vars as usize];
+            let mut regs = vec![0u64; self.num_regs as usize];
+
+            for outer_val in start..end {
+                slot_vals[outer_slot as usize] = outer_val;
+
+                if inner_slots.is_empty() {
+                    let val = self.eval_into(&slot_vals, &mut regs);
+                    let check = mask_for_check(val, result_width);
+                    if target.contains(check) {
+                        return Some((slot_vals, val));
+                    }
+                    continue;
+                }
+
+                // Initialize inner slots to 0
+                for &(_, si, _) in inner_slots {
+                    slot_vals[si as usize] = 0;
+                }
+
+                // Enumerate all inner combinations
+                loop {
+                    let val = self.eval_into(&slot_vals, &mut regs);
+                    let check = mask_for_check(val, result_width);
+                    if target.contains(check) {
+                        return Some((slot_vals, val));
+                    }
+
+                    let mut carry = true;
+                    for &(_, si, domain) in inner_slots.iter().rev() {
+                        if carry {
+                            let next = slot_vals[si as usize] + 1;
+                            if next < domain {
+                                slot_vals[si as usize] = next;
+                                carry = false;
+                            } else {
+                                slot_vals[si as usize] = 0;
+                            }
+                        }
+                    }
+                    if carry { break; }
+                }
+            }
+            None
+        });
+
+        found
+    }
 }
 
 struct Compiler<'a> {
@@ -246,6 +331,16 @@ impl<'a> Compiler<'a> {
 }
 
 /// Mask a value to `width` bits
+/// Mask a value for checking against ValueSet (8-bit domain)
+#[inline(always)]
+pub fn mask_for_check(val: u64, width: BvWidth) -> u8 {
+    if width <= 8 {
+        (val & ((1u64 << width) - 1)) as u8
+    } else {
+        (val & 0xFF) as u8
+    }
+}
+
 #[inline(always)]
 fn mask(val: u64, width: BvWidth) -> u64 {
     if width >= 64 { val } else { val & ((1u64 << width) - 1) }

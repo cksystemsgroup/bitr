@@ -5,6 +5,9 @@ edition = "2021"
 description = "Bitvector Decision Diagrams — canonical decision diagrams with 256-bit bitmask edge labels"
 license = "MIT"
 
+[dependencies]
+rayon = "1.10"
+
 [lib]
 name = "bvdd"
 path = "src/lib.rs"

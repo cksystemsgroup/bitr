@@ -16,6 +16,7 @@ use bvdd::solver::SolverContext;
 /// BMC configuration
 pub struct BmcConfig {
     pub max_bound: u32,
+    #[allow(dead_code)]
     pub timeout_s: f64,
     pub verbose: bool,
 }

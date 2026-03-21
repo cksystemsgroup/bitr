@@ -349,10 +349,7 @@ impl<'a> SolverContext<'a> {
 
         // Find a comparison subterm to decompose on
         let comp = self.find_comparison_subterm(term);
-        let comp = match comp {
-            Some(c) => c,
-            None => return None,
-        };
+        let comp = comp?;
 
         self.bool_decomp_calls += 1;
 
@@ -460,36 +457,50 @@ impl<'a> SolverContext<'a> {
         let constraint = entry.constraint;
         let width = self.bm.get(bvc).width;
 
-        // If only one variable remains with small domain, use compiled evaluator
         let prog = CompiledProgram::compile(self.tt, term);
 
-        if vars.len() == 1 {
-            let (var_id, var_width) = vars[0];
-            let domain_size: u64 = if var_width >= 64 { u64::MAX } else { 1u64 << var_width };
-            if domain_size > (1 << 28) {
-                return self.mgr.make_terminal(bvc, true, false);
-            }
+        // Build slot descriptors for all variables
+        let slots: Vec<(u32, u32, u64)> = vars.iter().filter_map(|&(vid, vw)| {
+            let domain = if vw >= 64 { u64::MAX } else { 1u64 << vw };
+            prog.var_slot(vid).map(|slot| (vid, slot, domain))
+        }).collect();
 
-            if let Some(slot_idx) = prog.var_slot(var_id) {
-                let mut slot_vars = vec![0u64; prog.num_vars as usize];
-                let mut regs = vec![0u64; prog.num_regs as usize];
-                for d in 0..domain_size {
-                    slot_vars[slot_idx as usize] = d;
-                    let val = prog.eval_into(&slot_vars, &mut regs);
-                    let check_val = mask_for_check(val, width);
-                    if s.contains(check_val) {
-                        self.witness.insert(var_id, d);
-                        let const_bvc = self.bm.make_const(self.tt, self.ct, val, width);
-                        self.sat_witnesses += 1;
-                        return self.mgr.make_terminal(const_bvc, true, true);
-                    }
-                }
-                return self.mgr.false_terminal();
-            }
+        if slots.len() != vars.len() {
+            // Not all variables found in compiled program — fall back
+            return self.generalized_blast_recursive(bvc, s, vars, constraint, term, width);
         }
 
-        // Multi-variable: enumerate narrowest first using SubstAndFold
-        self.generalized_blast_recursive(bvc, s, vars, constraint, term, width)
+        let total_domain: u128 = slots.iter()
+            .map(|&(_, _, d)| d as u128)
+            .fold(1u128, |acc, d| acc.saturating_mul(d));
+
+        if total_domain > (1u128 << 28) {
+            return self.mgr.make_terminal(bvc, true, false);
+        }
+
+        // Use parallel search for large domains (> 1M), sequential for small
+        let use_parallel = total_domain > 1_000_000;
+
+        if use_parallel {
+            if let Some((slot_vals, val)) = prog.parallel_search(&slots, s, width) {
+                // Record witness
+                for &(var_id, slot_idx, _) in &slots {
+                    self.witness.insert(var_id, slot_vals[slot_idx as usize]);
+                }
+                let const_bvc = self.bm.make_const(self.tt, self.ct, val, width);
+                self.sat_witnesses += 1;
+                return self.mgr.make_terminal(const_bvc, true, true);
+            }
+            return self.mgr.false_terminal();
+        }
+
+        // Sequential: use flat iterative multi-eval
+        let mut slot_vals = vec![0u64; prog.num_vars as usize];
+        let mut regs = vec![0u64; prog.num_regs as usize];
+        
+        self.compiled_multi_eval_flat(
+            &prog, &slots, &mut slot_vals, &mut regs, s, width,
+        )
     }
 
     /// Recursive generalized blast: enumerate narrowest variable, SubstAndFold, recurse.
@@ -895,14 +906,8 @@ impl<'a> SolverContext<'a> {
     }
 }
 
-/// Mask a value for checking against ValueSet (8-bit domain)
-fn mask_for_check(val: u64, width: u16) -> u8 {
-    if width <= 8 {
-        (val & ((1u64 << width) - 1)) as u8
-    } else {
-        (val & 0xFF) as u8
-    }
-}
+// Re-export from eval module
+use crate::eval::mask_for_check;
 
 /// Compute the coarsest partition of [0, 255] by membership signature.
 /// Values d1, d2 are in the same partition element iff for every value set S_i,
