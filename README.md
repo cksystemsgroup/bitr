@@ -120,7 +120,7 @@ The table below tracks each BVDD concept, its DPLL(T) analogue, and measured per
 | 2 × 10-bit | 1M | 0.04s | ~25M/s | sequential |
 | 3 × 8-bit | 16M | 0.32s | ~50M/s | parallel (8 cores) |
 
-**Test suite**: 87 unit tests, 16/16 benchmarks correct (combinational + sequential + array).
+**Test suite**: 91 unit tests, 18/18 benchmarks correct (16 BTOR2 + 2 SMT-LIB2).
 
 <!-- PERF_TABLE_END -->
 
