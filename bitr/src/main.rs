@@ -8,6 +8,7 @@ mod bitr;
 mod blast;
 mod oracle;
 mod bmc;
+mod smtlib2;
 #[allow(dead_code)]
 mod stats;
 
@@ -98,11 +99,117 @@ fn main() {
         }
     };
 
-    let model = match btor2::parse_btor2(&input) {
+    // Detect format: SMT-LIB2 (.smt2) or BTOR2 (.btor2)
+    let is_smt2 = filename.ends_with(".smt2") ||
+        input.trim_start().starts_with('(') ||
+        input.contains("set-logic");
+
+    let overall_result = if is_smt2 {
+        // SMT-LIB2 mode
+        if verbose {
+            eprintln!("bitr: SMT-LIB2 mode");
+        }
+        solve_smtlib2(&input, verbose, print_stats, solver_path.as_deref())
+    } else {
+        // BTOR2 mode
+        solve_btor2(&input, verbose, print_stats, solver_path.as_deref(), max_bound, timeout_s)
+    };
+
+    match overall_result {
+        SolveResult::Sat => println!("sat"),
+        SolveResult::Unsat => println!("unsat"),
+        SolveResult::Unknown => {
+            println!("unknown");
+            process::exit(1);
+        }
+    }
+}
+
+fn solve_smtlib2(
+    input: &str,
+    verbose: bool,
+    print_stats: bool,
+    solver_path: Option<&str>,
+) -> SolveResult {
+    let mut model = match smtlib2::parse_smtlib2(input) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("SMT-LIB2 parse error: {}", e);
+            return SolveResult::Unknown;
+        }
+    };
+
+    if verbose {
+        eprintln!("bitr: {} assertions, {} variables",
+            model.assertions.len(), model.var_map.len());
+    }
+
+    if model.assertions.is_empty() {
+        return SolveResult::Sat; // No constraints = trivially SAT
+    }
+
+    // Conjoin all assertions: the conjunction must be satisfiable
+    // Build term: AND(assert1, AND(assert2, ...))
+    let mut conj_bvc = model.assertions[0];
+    for &a in &model.assertions[1..] {
+        conj_bvc = model.bm.apply(
+            &mut model.tt, &mut model.ct, bvdd::types::OpKind::And,
+            &[conj_bvc, a], 1,
+        );
+    }
+
+    let mut mgr = BvddManager::new();
+    let is_ground = model.bm.is_ground(&model.tt, conj_bvc);
+    let terminal = mgr.make_terminal(conj_bvc, true, is_ground);
+    let target = ValueSet::singleton(1);
+
+    let mut smt_oracle = solver_path.map(|p| {
+        let mut o = oracle::SmtOracle::new(p);
+        o.set_timeout(5);
+        o
+    });
+
+    let (result, solve_calls, canon_calls) = {
+        let mut ctx = SolverContext::new(
+            &mut model.tt,
+            &mut model.ct,
+            &mut model.bm,
+            &mut mgr,
+        );
+        if let Some(ref mut oracle) = smt_oracle {
+            ctx.set_oracle(|tt, term, width, target| {
+                oracle.check(tt, term, width, target)
+            });
+        }
+        let result_bvdd = ctx.solve(terminal, target);
+        let r = ctx.get_result(result_bvdd);
+        (r, ctx.solve_calls, ctx.canonicalize_calls)
+    };
+
+    if verbose {
+        eprintln!("bitr: result={:?} (solve={}, canon={})", result, solve_calls, canon_calls);
+    }
+
+    if print_stats {
+        eprintln!("  Cache hits/misses: {}/{}", mgr.cache_hits, mgr.cache_misses);
+    }
+
+    result
+}
+
+fn solve_btor2(
+    input: &str,
+    verbose: bool,
+    print_stats: bool,
+    solver_path: Option<&str>,
+    max_bound: u32,
+    timeout_s: f64,
+) -> SolveResult {
+    let model = match btor2::parse_btor2(input) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Parse error: {}", e);
-            process::exit(1);
+            return SolveResult::Unknown;
         }
     };
 
@@ -111,12 +218,11 @@ fn main() {
             model.sorts.len(), model.nodes.len(), model.bad_properties.len());
     }
 
-    // Lift to BVCs
     let mut lifted = match lifter::lift_btor2(&model) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("Lift error: {}", e);
-            process::exit(1);
+            return SolveResult::Unknown;
         }
     };
 
@@ -124,10 +230,9 @@ fn main() {
         eprintln!("bitr: lifted {} BVCs, {} states", lifted.bm.len(), lifted.states.len());
     }
 
-    // Check if this is a sequential model (has state variables with next functions)
     let is_sequential = lifted.states.iter().any(|(_, _, next)| next.is_some());
 
-    let overall_result = if is_sequential {
+    if is_sequential {
         if verbose {
             eprintln!("bitr: sequential model, running BMC (max_bound={})", max_bound);
         }
@@ -156,16 +261,7 @@ fn main() {
         if verbose {
             eprintln!("bitr: combinational model, solving directly");
         }
-        solve_combinational(&mut lifted, verbose, print_stats, solver_path.as_deref())
-    };
-
-    match overall_result {
-        SolveResult::Sat => println!("sat"),
-        SolveResult::Unsat => println!("unsat"),
-        SolveResult::Unknown => {
-            println!("unknown");
-            process::exit(1);
-        }
+        solve_combinational(&mut lifted, verbose, print_stats, solver_path)
     }
 }
 
