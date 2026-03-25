@@ -75,7 +75,7 @@ Phases 0–9 complete. Core solver operational on combinational, sequential, and
 
 | Metric | bitr | bitwuzla | rIC3 |
 |--------|------|----------|------|
-| HW BV solved (≤500K, 10s) | 72/155 | — | — |
+| HW BV solved (≤500K, 10s) | 67/155 (43 verified) | — | — |
 | QF_BV (SMT-LIB2, 20s) | 10/10 | — | — |
 | QF_ABV (SMT-LIB2, 20s) | 6/6 | — | — |
 | HW Array solved | 0/321 | — | — |
@@ -122,7 +122,7 @@ The table below tracks each BVDD concept, its DPLL(T) analogue, and measured per
 | 2 × 10-bit | 1M | 0.04s | ~25M/s | sequential |
 | 3 × 8-bit | 16M | 0.32s | ~50M/s | parallel (8 cores) |
 
-**Test suite**: 91 unit tests, 32/32 benchmarks correct (16 BTOR2 + 10 QF_BV + 6 QF_ABV).
+**Test suite**: 91 unit tests, 40/40 benchmarks correct (16 BTOR2 + 10 QF_BV + 6 QF_ABV + 8 SW).
 
 <!-- PERF_TABLE_END -->
 
