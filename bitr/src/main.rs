@@ -176,6 +176,8 @@ fn solve_smtlib2(
             &mut model.bm,
             &mut mgr,
         );
+        // SMT-LIB2 mode: set 5s timeout for fast oracle fallback
+        ctx.solve_timeout_s = 5.0;
         if let Some(ref mut oracle) = smt_oracle {
             ctx.set_oracle(|tt, term, width, target| {
                 oracle.check(tt, term, width, target)

@@ -125,8 +125,9 @@ pub fn bmc_check(
                 SolveResult::Unknown
             };
 
-            // If BVDD solver returns Unknown on large terms, try oracle
-            if result == SolveResult::Unknown && term_size > 1000 {
+            // Only use oracle for very large terms where BVDD is hopeless
+            // (oracle calls take ~5s each, so use sparingly)
+            if result == SolveResult::Unknown && term_size > 50_000 {
                 if let Some(ref mut oracle) = smt_oracle {
                     let width = bm.get(resolved_bvc).width;
                     result = oracle.check(tt, term, width, ValueSet::singleton(1));

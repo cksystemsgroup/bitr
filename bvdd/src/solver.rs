@@ -75,7 +75,7 @@ impl<'a> SolverContext<'a> {
             oracle_fn: None,
             witness: HashMap::new(),
             start_time: std::time::Instant::now(),
-            solve_timeout_s: 5.0,
+            solve_timeout_s: 0.0, // No timeout by default; callers set it
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -340,11 +340,11 @@ impl<'a> SolverContext<'a> {
             return self.theory_resolve_ground(bvc, s);
         }
 
-        // Timeout check — skip directly to oracle
+        // Timeout check — return non-ground to signal Unknown
         if self.solve_timeout_s > 0.0 &&
            self.start_time.elapsed().as_secs_f64() > self.solve_timeout_s {
             self.cancelled.store(true, Ordering::Relaxed);
-            return self.invoke_oracle(bvc, s);
+            return self.mgr.make_terminal(bvc, true, false);
         }
 
         // Stage 1: Boolean decomposition for 1-bit comparison subterms
@@ -369,8 +369,13 @@ impl<'a> SolverContext<'a> {
             return result;
         }
 
-        // Stage 4: Direct theory oracle
-        self.invoke_oracle(bvc, s)
+        // Stage 4: Direct theory oracle (only if timeout is set — avoids
+        // expensive subprocess calls in BTOR2 BMC mode where time is precious)
+        if self.solve_timeout_s > 0.0 {
+            self.invoke_oracle(bvc, s)
+        } else {
+            self.mgr.make_terminal(bvc, true, false) // Unknown
+        }
     }
 
     /// Stage 1: Boolean decomposition — find comparison subterms in 1-bit
@@ -511,9 +516,12 @@ impl<'a> SolverContext<'a> {
             .map(|&(_, _, d)| d as u128)
             .fold(1u128, |acc, d| acc.saturating_mul(d));
 
-        if total_domain > (1u128 << 28) || self.timed_out() {
-            // Domain too large or timed out — fall through to oracle
-            return self.invoke_oracle(bvc, s);
+        if total_domain > (1u128 << 28) {
+            // Domain too large — return non-ground (Unknown)
+            return self.mgr.make_terminal(bvc, true, false);
+        }
+        if self.timed_out() {
+            return self.mgr.make_terminal(bvc, true, false);
         }
 
         // Use parallel search for large domains (> 1M), sequential for small
