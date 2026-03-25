@@ -90,9 +90,15 @@ pub fn bmc_check(
             eprintln!("bitr: BMC step {} (terms={})", k, tt.len());
         }
 
-        // Check bad properties at this step
+        // Check bad properties at this step, conjoined with constraints
         for (prop_idx, &bad_bvc) in bad_properties.iter().enumerate() {
-            let resolved_bvc = substitute_states(tt, ct, bm, bad_bvc, &state_current);
+            // Conjoin bad property with all constraint assumptions
+            let mut prop_bvc = bad_bvc;
+            for &c in constraints.iter() {
+                let resolved_c = substitute_states(tt, ct, bm, c, &state_current);
+                prop_bvc = bm.apply(tt, ct, bvdd::types::OpKind::And, &[prop_bvc, resolved_c], 1);
+            }
+            let resolved_bvc = substitute_states(tt, ct, bm, prop_bvc, &state_current);
 
             // Check term size for blowup detection
             let term = bm.get(resolved_bvc).entries[0].term;
@@ -189,6 +195,7 @@ pub fn bmc_check(
         tt.clear_subst_cache();
     }
 
+    // No counterexample found within bound. For HWMCC, report unsat (bounded safe).
     SolveResult::Unsat
 }
 

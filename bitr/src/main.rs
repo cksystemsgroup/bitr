@@ -303,8 +303,17 @@ fn solve_combinational(
     });
 
     for (i, &bad_bvc) in lifted.bad_properties.iter().enumerate() {
-        let is_ground = lifted.bm.is_ground(&lifted.tt, bad_bvc);
-        let terminal = mgr.make_terminal(bad_bvc, true, is_ground);
+        // Conjoin bad property with all constraint assumptions:
+        // bad is reachable only when ALL constraints are also satisfied
+        let mut prop_bvc = bad_bvc;
+        for &c in &lifted.constraints {
+            prop_bvc = lifted.bm.apply(
+                &mut lifted.tt, &mut lifted.ct,
+                bvdd::types::OpKind::And, &[prop_bvc, c], 1,
+            );
+        }
+        let is_ground = lifted.bm.is_ground(&lifted.tt, prop_bvc);
+        let terminal = mgr.make_terminal(prop_bvc, true, is_ground);
         let target = ValueSet::singleton(1);
 
         let (result, solve_calls, canon_calls, decide_calls, sat_w, unsat_t, restrict_c,

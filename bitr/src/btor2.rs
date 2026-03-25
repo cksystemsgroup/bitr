@@ -123,6 +123,28 @@ pub fn parse_btor2(input: &str) -> Result<Btor2Model, String> {
                     symbol: parts.get(3).map(|s| s.to_string()),
                 });
             }
+            "constraint" => {
+                // constraint <arg> — same format as bad (no sort)
+                let arg: i64 = parts[2].parse().unwrap_or(0);
+                nodes.push(Btor2Node {
+                    nid,
+                    op: "constraint".to_string(),
+                    sort_id: 0,
+                    args: vec![arg],
+                    symbol: parts.get(3).map(|s| s.to_string()),
+                });
+            }
+            "output" => {
+                // output <arg> — same format
+                let arg: i64 = if parts.len() > 2 { parts[2].parse().unwrap_or(0) } else { 0 };
+                nodes.push(Btor2Node {
+                    nid,
+                    op: "output".to_string(),
+                    sort_id: 0,
+                    args: vec![arg],
+                    symbol: parts.get(3).map(|s| s.to_string()),
+                });
+            }
             op => {
                 let sort_id: u32 = parts[2].parse().unwrap_or(0);
                 let mut args = Vec::new();
