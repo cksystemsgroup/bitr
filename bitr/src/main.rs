@@ -269,6 +269,10 @@ fn solve_btor2(
             timeout_s,
             verbose,
         };
+        let input_vars: Vec<bmc::InputVar> = lifted.inputs.iter()
+            .map(|&(nid, width)| bmc::InputVar { nid, width })
+            .collect();
+
         bmc::bmc_check(
             &bmc_config,
             &mut lifted.tt,
@@ -277,6 +281,7 @@ fn solve_btor2(
             &state_vars,
             &lifted.bad_properties,
             &lifted.constraints,
+            &input_vars,
         )
     } else {
         if verbose {

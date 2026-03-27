@@ -75,7 +75,7 @@ Phases 0–9 complete. Core solver operational on combinational, sequential, and
 
 | Metric | bitr | bitwuzla | rIC3 |
 |--------|------|----------|------|
-| HW BV solved (≤500K, 10s) | 67/155 (43 verified) | — | — |
+| HW BV solved (≤500K, 10s) | 34/155 (26 verified correct) | — | — |
 | QF_BV (SMT-LIB2, 20s) | 10/10 | — | — |
 | QF_ABV (SMT-LIB2, 20s) | 6/6 | — | — |
 | HW Array solved | 0/321 | — | — |

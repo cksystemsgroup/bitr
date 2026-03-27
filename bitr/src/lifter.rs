@@ -41,6 +41,8 @@ pub struct LiftedModel {
     pub states: Vec<(u32, Option<BvcId>, Option<BvcId>)>,
     /// Constraint BVC IDs (assumptions)
     pub constraints: Vec<BvcId>,
+    /// Input variables: (nid, width) — for BMC fresh-renaming
+    pub inputs: Vec<(u32, BvWidth)>,
 }
 
 /// Map a BTOR2 operator name to an OpKind
@@ -98,6 +100,7 @@ pub fn lift_btor2(model: &Btor2Model) -> Result<LiftedModel, String> {
     let mut bad_properties = Vec::new();
     let mut states: Vec<(u32, Option<BvcId>, Option<BvcId>)> = Vec::new();
     let mut constraints = Vec::new();
+    let mut inputs = Vec::new();
 
     // Index sorts
     for (nid, sort) in &model.sorts {
@@ -130,7 +133,6 @@ pub fn lift_btor2(model: &Btor2Model) -> Result<LiftedModel, String> {
         match op {
             "input" => {
                 if let Some((iw, ew)) = get_array_sort(node.sort_id) {
-                    // Array input: track as base array state
                     nid_to_array.insert(node.nid, ArrayState::Base {
                         nid: node.nid,
                         index_width: iw,
@@ -140,6 +142,7 @@ pub fn lift_btor2(model: &Btor2Model) -> Result<LiftedModel, String> {
                     let width = get_width(node.sort_id)?;
                     let bvc = bm.make_input(&mut tt, &ct, node.nid, width);
                     nid_to_bvc.insert(node.nid, bvc);
+                    inputs.push((node.nid, width));
                 }
             }
             "state" => {
@@ -374,6 +377,7 @@ pub fn lift_btor2(model: &Btor2Model) -> Result<LiftedModel, String> {
         bad_properties,
         states,
         constraints,
+        inputs,
     })
 }
 

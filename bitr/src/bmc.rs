@@ -41,7 +41,14 @@ pub struct StateVar {
     pub next_bvc: Option<BvcId>,
 }
 
+/// Input variable info (for fresh-renaming at each BMC step)
+pub struct InputVar {
+    pub nid: u32,
+    pub width: BvWidth,
+}
+
 /// Run bounded model checking
+#[allow(clippy::too_many_arguments)]
 pub fn bmc_check(
     config: &BmcConfig,
     tt: &mut TermTable,
@@ -50,6 +57,7 @@ pub fn bmc_check(
     states: &[StateVar],
     bad_properties: &[BvcId],
     constraints: &[BvcId],
+    inputs: &[InputVar],
 ) -> SolveResult {
     let mut mgr = BvddManager::new();
     let start_time = Instant::now();
@@ -76,6 +84,23 @@ pub fn bmc_check(
 
     // Track term sizes to detect blowup
     let mut max_term_size: usize = 0;
+
+    // Pre-compute which inputs need fresh renaming at each step
+    // (those that appear in next-state functions)
+    let inputs_in_next: std::collections::HashSet<u32> = {
+        let mut set = std::collections::HashSet::new();
+        for sv in states {
+            if let Some(next_bvc) = sv.next_bvc {
+                let term = bm.get(next_bvc).entries[0].term;
+                for &(v, _) in &tt.collect_vars(term) {
+                    if inputs.iter().any(|iv| iv.nid == v) {
+                        set.insert(v);
+                    }
+                }
+            }
+        }
+        set
+    };
 
     for k in 0..=config.max_bound {
         // Wall-clock timeout — stop exploring deeper, return current result
@@ -176,11 +201,25 @@ pub fn bmc_check(
             break;
         }
 
+        // Create fresh input variables only for inputs used in next-state functions
+        let mut input_rename: HashMap<u32, BvcId> = HashMap::new();
+        for iv in inputs {
+            if inputs_in_next.contains(&iv.nid) {
+                let fresh_id = bm.fresh_var();
+                let fresh_bvc = bm.make_input(tt, ct, fresh_id, iv.width);
+                input_rename.insert(iv.nid, fresh_bvc);
+            }
+        }
+
         // Advance to next step: substitute next-state functions
         let mut new_state: HashMap<u32, BvcId> = HashMap::new();
         for sv in states {
             if let Some(next_bvc) = sv.next_bvc {
-                let resolved = substitute_states(tt, ct, bm, next_bvc, &state_current);
+                let mut resolved = substitute_states(tt, ct, bm, next_bvc, &state_current);
+                // Rename input variables to fresh ones for this step
+                if !input_rename.is_empty() {
+                    resolved = substitute_states(tt, ct, bm, resolved, &input_rename);
+                }
                 new_state.insert(sv.nid, resolved);
             } else {
                 let fresh_var = bm.fresh_var();
