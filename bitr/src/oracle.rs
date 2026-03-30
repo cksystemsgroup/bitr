@@ -61,15 +61,22 @@ impl SmtOracle {
     ) -> SolveResult {
         self.calls += 1;
 
-        // Simple cache key from term id and target
-        let cache_key = (term.0 as u64) ^ (target.bits[0].wrapping_mul(0x9e3779b97f4a7c15));
+        // Generate SMT-LIB2 first (needed for both cache key and solver call)
+        let smt = self.term_to_smtlib2(tt, term, width, target);
+
+        // Use hash of the full SMT-LIB2 string as cache key (collision-resistant)
+        let cache_key = {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in smt.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        };
         if let Some(&result) = self.cache.get(&cache_key) {
             self.cache_hits += 1;
             return result;
         }
-
-        // Generate SMT-LIB2
-        let smt = self.term_to_smtlib2(tt, term, width, target);
 
         // Invoke solver
         let result = self.invoke_solver(&smt);

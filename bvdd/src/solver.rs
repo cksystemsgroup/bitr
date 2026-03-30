@@ -40,6 +40,8 @@ pub struct SolverContext<'a> {
     pub oracle_fn: Option<Box<dyn FnMut(&TermTable, crate::types::TermId, u16, ValueSet) -> SolveResult + 'a>>,
     /// Witness: variable assignments when SAT is found (var_id → value)
     pub witness: HashMap<u32, u64>,
+    /// Memoization for boolean decomposition: term → comparison var found
+    decomp_cache: HashMap<crate::types::TermId, Option<u32>>,
     /// Wall-clock start time for timeout
     start_time: std::time::Instant,
     /// Timeout in seconds (0 = no timeout)
@@ -74,6 +76,7 @@ impl<'a> SolverContext<'a> {
             oracle_calls: 0,
             oracle_fn: None,
             witness: HashMap::new(),
+            decomp_cache: HashMap::new(),
             start_time: std::time::Instant::now(),
             solve_timeout_s: 0.0, // No timeout by default; callers set it
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -230,17 +233,20 @@ impl<'a> SolverContext<'a> {
         }
 
         // Phase 5b: Restrict + recurse
+        // s_j partitions the predicate variable's domain, NOT the result domain.
+        // The result domain s is passed unchanged to each recursive solve.
         let mut result_edges: Vec<BvddEdge> = Vec::new();
         for s_j in &partition {
-            let s_restricted = s.and(*s_j);
-            if s_restricted.is_empty() {
+            let restricted_constraint = self.ct.restrict(constraint, pred_bvc, *s_j);
+
+            // If Restrict collapsed constraint to FALSE, skip this partition
+            if self.ct.is_definitely_false(restricted_constraint) {
                 continue;
             }
 
-            let restricted_constraint = self.ct.restrict(constraint, pred_bvc, *s_j);
             let new_bvc = self.make_restricted_bvc(bvc, restricted_constraint);
             let new_bvdd = self.mgr.make_terminal(new_bvc, true, false);
-            let result = self.solve(new_bvdd, s_restricted);
+            let result = self.solve(new_bvdd, s);
 
             if self.mgr.get(result).can_be_true && self.mgr.get(result).is_ground {
                 return result; // Early SAT
@@ -354,6 +360,88 @@ impl<'a> SolverContext<'a> {
             }
         }
 
+        // HSC decomposition: split wide variables (>8 bits) into byte slices.
+        // Only when total domain > 2^28 (would exceed blast budget) and
+        // there's exactly one wide variable (avoid cascading splits).
+        let total_domain: u128 = vars.iter()
+            .map(|&(_, w)| if w >= 64 { u128::MAX } else { 1u128 << w })
+            .fold(1u128, |acc, d| acc.saturating_mul(d));
+        let wide_count = vars.iter().filter(|&&(_, w)| w > 8).count();
+        if wide_count == 1 && total_domain > (1u128 << 28) {
+            let (wide_id, wide_width) = *vars.iter().max_by_key(|&&(_, w)| w).unwrap();
+            let msb_bits: u16 = 8.min(wide_width);
+            let lsb_bits: u16 = wide_width - msb_bits;
+
+            let entry = &self.bm.get(bvc).entries[0];
+            let term = entry.term;
+            let constraint = entry.constraint;
+            let width = self.bm.get(bvc).width;
+
+            let mut result_edges: Vec<BvddEdge> = Vec::new();
+            for msb in 0..256u64 {
+                let shifted = msb << lsb_bits;
+                if lsb_bits == 0 {
+                    // Variable fits in one byte
+                    let new_term = self.tt.subst_and_fold(term, wide_id, shifted);
+                    let new_bvc = {
+                        use crate::bvc::BvcEntry;
+                        self.bm.alloc(width, vec![BvcEntry { term: new_term, constraint }])
+                    };
+                    let result = self.theory_resolve(new_bvc, s);
+                    if self.mgr.get(result).can_be_true && self.mgr.get(result).is_ground {
+                        return result;
+                    }
+                    if !self.mgr.is_false(result) {
+                        result_edges.push(BvddEdge {
+                            label: ValueSet::singleton(msb as u8),
+                            child: result,
+                        });
+                    }
+                } else {
+                    // Create new variable for LSB portion
+                    let lsb_var = self.bm.fresh_var();
+                    let lsb_term = self.tt.make_var(lsb_var, lsb_bits);
+                    // Build: wide_var = (msb << lsb_bits) | lsb_var
+                    let msb_const = self.tt.make_const(shifted, wide_width);
+                    let lsb_ext = self.tt.make_app(OpKind::Uext, vec![lsb_term], wide_width);
+                    let combined = self.tt.make_app(OpKind::Or, vec![msb_const, lsb_ext], wide_width);
+                    let new_term = self.tt.subst_term(term, wide_id, combined);
+
+                    let new_bvc = {
+                        use crate::bvc::BvcEntry;
+                        self.bm.alloc(width, vec![BvcEntry { term: new_term, constraint }])
+                    };
+                    let result = self.theory_resolve(new_bvc, s);
+                    if self.mgr.get(result).can_be_true && self.mgr.get(result).is_ground {
+                        return result;
+                    }
+                    if !self.mgr.is_false(result) {
+                        result_edges.push(BvddEdge {
+                            label: ValueSet::singleton(msb as u8),
+                            child: result,
+                        });
+                    }
+                }
+                // Check timeout periodically
+                if msb % 64 == 63 && self.timed_out() {
+                    break;
+                }
+            }
+
+            if result_edges.is_empty() {
+                return self.mgr.false_terminal();
+            }
+            let var_label_bvc = {
+                use crate::bvc::BvcEntry;
+                let var_term = self.tt.make_var(wide_id, wide_width);
+                self.bm.alloc(wide_width, vec![BvcEntry {
+                    term: var_term, constraint: self.ct.true_id(),
+                }])
+            };
+            let label = self.mgr.make_terminal(var_label_bvc, true, false);
+            return self.mgr.make_decision(label, result_edges);
+        }
+
         // Compute total domain product for budget check
         let total_domain: u128 = vars.iter()
             .map(|&(_, w)| if w >= 64 { u128::MAX } else { 1u128 << w })
@@ -459,6 +547,15 @@ impl<'a> SolverContext<'a> {
     /// Find a comparison subterm (EQ, ULT, etc.) that can be decomposed.
     /// Returns a pseudo-variable ID representing the comparison.
     fn find_comparison_subterm(&mut self, term: crate::types::TermId) -> Option<u32> {
+        if let Some(&cached) = self.decomp_cache.get(&term) {
+            return cached;
+        }
+        let result = self.find_comparison_subterm_inner(term);
+        self.decomp_cache.insert(term, result);
+        result
+    }
+
+    fn find_comparison_subterm_inner(&mut self, term: crate::types::TermId) -> Option<u32> {
         match &self.tt.get(term).kind.clone() {
             TermKind::Const(_) | TermKind::Var(_) => None,
             TermKind::App { op, args, .. } => {

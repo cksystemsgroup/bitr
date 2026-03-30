@@ -114,9 +114,15 @@ pub fn bmc_check(
         set
     };
 
+    let mut last_step_time = 0.0f64;
+
     for k in 0..=config.max_bound {
+        let step_start = start_time.elapsed().as_secs_f64();
+
         // Wall-clock timeout — stop exploring deeper, return current result
-        if start_time.elapsed().as_secs_f64() > config.timeout_s {
+        // Also stop if the last step took longer than remaining time budget
+        let remaining = config.timeout_s - step_start;
+        if remaining <= 0.0 || (k > 2 && last_step_time > remaining * 0.8) {
             if config.verbose {
                 eprintln!("bitr: wall-clock timeout at step {}", k);
             }
@@ -247,6 +253,9 @@ pub fn bmc_check(
             }
         }
         state_current = new_state;
+
+        // Track step timing for adaptive budget
+        last_step_time = start_time.elapsed().as_secs_f64() - step_start;
 
         // Clear caches between steps
         mgr.cache_clear();
