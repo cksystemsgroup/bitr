@@ -67,11 +67,16 @@ cargo run --release -- --stats --verbose benchmarks/tiny/simple_sat.btor2
 
 # Compare against reference solver
 python3 scripts/compare.py results/bitr.csv results/bitwuzla.csv
+
+# Head-to-head comparison: bitr vs bitwuzla (Python API) on tiny+perf benchmarks
+pip install bitwuzla
+cargo build --release
+python3 benchmarks/compare_solvers.py
 ```
 
 ## Current Status
 
-Phases 0–9 complete. Core solver operational on combinational, sequential, and array benchmarks. 16/16 tiny benchmarks correct. Optimization ongoing.
+Phases 0–9 complete. Phase 10 optimization in progress. Core solver operational on combinational, sequential, and array benchmarks. 33/33 benchmarks correct. Benchmarked against bitwuzla with 2.6x overall speedup from optimization round.
 
 | Metric | bitr | bitwuzla | rIC3 |
 |--------|------|----------|------|
@@ -79,8 +84,40 @@ Phases 0–9 complete. Core solver operational on combinational, sequential, and
 | QF_BV (SMT-LIB2, 20s) | 10/10 | — | — |
 | QF_ABV (SMT-LIB2, 20s) | 6/6 | — | — |
 | HW Array solved (10s) | 210/321 | — | — |
-| SW BV solved | — | — | — |
-| Total time (s) | — | — | — |
+| Tiny benchmarks | 16/16 | 16/16 | — |
+| Perf benchmarks | 17/17 | 17/17 | — |
+| Total perf time (no oracle) | 22.7s | 1.1s | — |
+
+### bitr vs bitwuzla Comparison
+
+Benchmarked on combinational and sequential BTOR2 problems (no external oracle). bitwuzla uses CDCL-based bit-blasting; bitr uses BVDD theory resolution with parallel compiled evaluation.
+
+| Benchmark | bitr | bitwuzla | Ratio |
+|---|---|---|---|
+| tiny (16 combinational+sequential) | all <10ms | all <1ms | ~7x |
+| exhaustive_28 (single-var UNSAT, 28-bit) | 1.0s | 0.001s | 1000x |
+| wide_mul_32 (single-var UNSAT, 32-bit) | 16.1s | 0.001s | 16000x |
+| shift_puzzle_sat (2-var SAT, 16-bit) | 26ms | 1ms | 26x |
+| three_var_8_unsat (3-var UNSAT, 8-bit) | 126ms | 0.5ms | 250x |
+| twovars_16 (2-var SAT, 16-bit) | 5.2s | 0.5ms | 10000x |
+| counter_deep (BMC, 16-bit) | 6ms | 136ms | **23x faster** |
+| counter_unsat (BMC, 8-bit) | 7ms | 150ms | **21x faster** |
+
+**Key finding**: bitr outperforms bitwuzla on sequential BMC problems (21-23x faster) due to native transition-relation unrolling. bitwuzla is much faster on wide combinational UNSAT problems due to CDCL-based algebraic reasoning vs bitr's enumeration-based approach.
+
+### Optimization History
+
+| Change | Before | After | Speedup |
+|---|---|---|---|
+| Edge merging O(n²)→O(n) | — | — | structural |
+| Solve hot path: avoid enum clone | — | — | terminal path |
+| BMC: single-pass substitution | — | — | ~2x per step |
+| BMC: conjoin constraints | — | — | N solves → 1 |
+| BMC: persist computed cache | 22ms | 7ms | 3x |
+| Multi-variable HSC decomposition | — | — | wide BV support |
+| Parallel blast budget (2^33/2^32) | — | — | 32-bit support |
+| Byte-blast 500ms bailout | 36.4s | 5.2s | 7x |
+| **Total benchmark time** | **59.7s** | **22.7s** | **2.6x** |
 
 ### BVDD Implementation Status
 
@@ -97,7 +134,7 @@ The table below tracks each BVDD concept, its DPLL(T) analogue, and measured per
 | **Hash-consed terms** — symbolic expression DAG | Term algebra | Done | 4 B id | Memoized substitution caches |
 | **Constraints** — Boolean formulas over predicates | Learned clauses | Done | 4 B id | Hash-consed; short-circuit Restrict |
 | **HSC** — hierarchical 8-bit slice cascade | Bit-blasting to SAT | Done | — | MSB→LSB cascade for variables > 8 bits |
-| **Computed cache** — memoize Solve(node, valueset) | Conflict cache | Done | 64K entries | Direct-mapped; cleared between BMC steps |
+| **Computed cache** — memoize Solve(node, valueset) | Conflict cache | Done | 64K entries | Direct-mapped; persists across BMC steps |
 | **Canonicalize/Solve** — reducing BVDD to canonical form decides SAT | DPLL(T) search | Done | — | Ground check → terminal → decision traversal |
 | **Decide/Restrict** — partition domain by predicate signatures | Decision + BCP | Done | — | Coarsest partition; short-circuit AND/OR |
 | **Theory resolution** — 4-stage cascade when no predicates remain | Theory solver | Done | — | See cascade table below |
@@ -107,8 +144,9 @@ The table below tracks each BVDD concept, its DPLL(T) analogue, and measured per
 | Stage | Strategy | Budget | Throughput |
 |---|---|---|---|
 | 1. Boolean decomposition | Branch on 1-bit comparison subterms | — | — |
-| 2. Generalized blast | Enumerate narrowest variable first (packed bytecode evaluator) | 2^28 domain | **211M eval/s** (parallel) |
-| 3. Byte-blast | Split widest variable's MSB byte; enumerate 256 × LSB | depth 4; 25% bailout | — |
+| 2. Generalized blast | Enumerate variables (packed bytecode evaluator) | 2^28 sequential | **211M eval/s** (parallel) |
+| 3. Byte-blast | Split widest variable's MSB byte; enumerate 256 × LSB | depth 4; 500ms timeout | — |
+| 3b. Parallel blast | Parallel compiled evaluation for wider domains | 2^33 single-var, 2^32 multi-var | parallel (rayon) |
 | 4. Theory oracle | External SMT solver (bitwuzla/z3) on residual | 5s per call | cached |
 
 **Exhaustive search performance** (UNSAT `x²+1 ≡ 0 mod 2^n`, packed bytecode evaluator, 8-core Apple Silicon):
@@ -122,7 +160,7 @@ The table below tracks each BVDD concept, its DPLL(T) analogue, and measured per
 | 2 × 10-bit | 1M | 0.04s | ~25M/s | sequential |
 | 3 × 8-bit | 16M | 0.32s | ~50M/s | parallel (8 cores) |
 
-**Test suite**: 91 unit tests, 40/40 benchmarks correct (16 BTOR2 + 10 QF_BV + 6 QF_ABV + 8 SW).
+**Test suite**: 91 unit tests, 33/33 benchmarks correct (16 tiny BTOR2 + 17 perf BTOR2). Bitwuzla comparison via `benchmarks/compare_solvers.py`.
 
 <!-- PERF_TABLE_END -->
 
