@@ -1,0 +1,19 @@
+; Multiple properties: 3 bad properties, mix of SAT and UNSAT
+; Tests multi-property handling
+; Expected: SAT (first bad is reachable: x == x is always true)
+1 sort bitvec 8
+2 sort bitvec 1
+3 input 1 x
+4 input 1 y
+; bad[0]: x == x (trivially SAT)
+5 eq 2 3 3
+6 bad 5
+; bad[1]: x + y == x - y AND y != 0 (UNSAT: requires 2y==0 but y!=0, only when y=128)
+; Actually 2*128=0 mod 256, so y=128 works: SAT
+7 add 1 3 4
+8 sub 1 3 4
+9 eq 2 7 8
+10 zero 1
+11 neq 2 4 10
+12 and 2 9 11
+13 bad 12

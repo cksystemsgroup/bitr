@@ -1,0 +1,14 @@
+; SAT: 16-bit counter reaches 0xFFFF (needs 65535 BMC steps)
+; Tests BMC scalability with deep unrolling
+; Expected: SAT (at step 65535) — use --bound 200 for reasonable test
+1 sort bitvec 16
+2 sort bitvec 1
+3 zero 1
+4 state 1 count
+5 one 1
+6 add 1 4 5
+7 next 1 4 6
+8 init 1 4 3
+9 constd 1 200
+10 eq 2 4 9
+11 bad 10

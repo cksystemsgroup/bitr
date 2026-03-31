@@ -135,14 +135,20 @@ impl<'a> SolverContext<'a> {
         }
 
         self.depth += 1;
-        let result = match self.mgr.get(g).kind.clone() {
-            // Phase 2: terminal → Canonicalize
-            BvddNodeKind::Terminal { bvc } => {
-                self.canonicalize(bvc, s)
-            }
-            // Phase 3: decision node
-            BvddNodeKind::Decision { label, edges } => {
-                self.solve_decision(label, &edges, s)
+        let result = {
+            let node = self.mgr.get(g);
+            match &node.kind {
+                // Phase 2: terminal → Canonicalize
+                BvddNodeKind::Terminal { bvc } => {
+                    let bvc = *bvc;
+                    self.canonicalize(bvc, s)
+                }
+                // Phase 3: decision node
+                BvddNodeKind::Decision { label, edges } => {
+                    let label = *label;
+                    let edges = edges.clone(); // Clone only the Vec, not the enum wrapper
+                    self.solve_decision(label, &edges, s)
+                }
             }
         };
         self.depth -= 1;
@@ -361,13 +367,13 @@ impl<'a> SolverContext<'a> {
         }
 
         // HSC decomposition: split wide variables (>8 bits) into byte slices.
-        // Only when total domain > 2^28 (would exceed blast budget) and
-        // there's exactly one wide variable (avoid cascading splits).
+        // When total domain > 2^28, split the widest variable's MSB byte
+        // and recurse. Works for any number of wide variables.
         let total_domain: u128 = vars.iter()
             .map(|&(_, w)| if w >= 64 { u128::MAX } else { 1u128 << w })
             .fold(1u128, |acc, d| acc.saturating_mul(d));
         let wide_count = vars.iter().filter(|&&(_, w)| w > 8).count();
-        if wide_count == 1 && total_domain > (1u128 << 28) {
+        if wide_count >= 1 && total_domain > (1u128 << 32) {
             let (wide_id, wide_width) = *vars.iter().max_by_key(|&&(_, w)| w).unwrap();
             let msb_bits: u16 = 8.min(wide_width);
             let lsb_bits: u16 = wide_width - msb_bits;
@@ -447,19 +453,26 @@ impl<'a> SolverContext<'a> {
             .map(|&(_, w)| if w >= 64 { u128::MAX } else { 1u128 << w })
             .fold(1u128, |acc, d| acc.saturating_mul(d));
 
-        // Stage 2: Generalized blast with compiled evaluator
+        // Stage 2: Compiled blast for domains within budget (fast sequential/parallel)
         if total_domain <= (1u128 << 28) {
             return self.compiled_blast(bvc, s, &vars);
         }
 
-        // Stage 3: Byte-blast oracle (split widest var's MSB byte)
+        // Stage 3: Byte-blast (HSC decomposition — splits widest variable MSB byte,
+        // recurses on sub-problems). Effective for multi-variable SAT and structured problems.
         if let Some(result) = self.byte_blast(bvc, s, &vars, 0) {
             return result;
         }
 
-        // Stage 4: Direct theory oracle (only if timeout is set — avoids
-        // expensive subprocess calls in BTOR2 BMC mode where time is precious)
-        if self.solve_timeout_s > 0.0 {
+        // Stage 3b: Parallel compiled blast for domains up to 2^33 (single-var)
+        // or 2^32 (multi-var) when byte-blast couldn't handle it
+        let parallel_budget = if vars.len() == 1 { 1u128 << 33 } else { 1u128 << 32 };
+        if total_domain <= parallel_budget {
+            return self.compiled_blast(bvc, s, &vars);
+        }
+
+        // Stage 4: Direct theory oracle — use when available, regardless of timeout mode
+        if self.oracle_fn.is_some() {
             self.invoke_oracle(bvc, s)
         } else {
             self.mgr.make_terminal(bvc, true, false) // Unknown
@@ -613,7 +626,8 @@ impl<'a> SolverContext<'a> {
             .map(|&(_, _, d)| d as u128)
             .fold(1u128, |acc, d| acc.saturating_mul(d));
 
-        if total_domain > (1u128 << 28) {
+        let blast_budget = if vars.len() == 1 { 1u128 << 33 } else { 1u128 << 32 };
+        if total_domain > blast_budget {
             // Domain too large — return non-ground (Unknown)
             return self.mgr.make_terminal(bvc, true, false);
         }
@@ -621,8 +635,8 @@ impl<'a> SolverContext<'a> {
             return self.mgr.make_terminal(bvc, true, false);
         }
 
-        // Use parallel search for large domains (> 1M), sequential for small
-        let use_parallel = total_domain > 1_000_000;
+        // Use parallel search for large domains (> 100K), sequential for small
+        let use_parallel = total_domain > 100_000;
 
         if use_parallel {
             // Start a timeout thread that sets cancelled after solve_timeout_s
@@ -681,7 +695,8 @@ impl<'a> SolverContext<'a> {
             .map(|&(_, w)| if w >= 64 { u128::MAX } else { 1u128 << w })
             .fold(1u128, |acc, d| acc.saturating_mul(d));
 
-        if total_domain <= (1u128 << 28) {
+        let blast_budget_recursive = if vars.len() == 1 { 1u128 << 33 } else { 1u128 << 32 };
+        if total_domain <= blast_budget_recursive {
             let prog = CompiledProgram::compile(self.tt, term);
             let slots: Vec<(u32, u32, u64)> = vars.iter().filter_map(|&(vid, vw)| {
                 let domain = if vw >= 64 { u64::MAX } else { 1u64 << vw };
@@ -870,8 +885,15 @@ impl<'a> SolverContext<'a> {
         // For each MSB byte value, enumerate the LSB range if feasible
         let mut result_edges: Vec<BvddEdge> = Vec::new();
         let mut oracle_needed = 0u32;
+        let byte_blast_start = std::time::Instant::now();
 
         for msb in 0..256u64 {
+            // Time-based bailout: if byte-blast takes > 500ms, give up
+            // and let parallel blast or oracle handle it
+            if msb % 16 == 15 && byte_blast_start.elapsed().as_millis() > 500 {
+                return None;
+            }
+
             let shifted = msb << lsb_bits;
 
             if lsb_domain <= 256 {

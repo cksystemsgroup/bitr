@@ -281,15 +281,24 @@ fn merge_edges(edges: Vec<BvddEdge>) -> Vec<BvddEdge> {
         return edges;
     }
 
-    let mut merged: Vec<BvddEdge> = Vec::with_capacity(edges.len());
+    // Use HashMap for O(n) merging instead of O(n²) linear scan
+    let mut map: HashMap<BvddId, ValueSet> = HashMap::with_capacity(edges.len());
+    let mut order: Vec<BvddId> = Vec::with_capacity(edges.len());
     for edge in edges {
-        if let Some(existing) = merged.iter_mut().find(|e| e.child == edge.child) {
-            existing.label = existing.label.or(edge.label);
-        } else {
-            merged.push(edge);
+        match map.get_mut(&edge.child) {
+            Some(existing) => {
+                *existing = existing.or(edge.label);
+            }
+            None => {
+                order.push(edge.child);
+                map.insert(edge.child, edge.label);
+            }
         }
     }
-    merged
+    order.into_iter().map(|child| BvddEdge {
+        label: map[&child],
+        child,
+    }).collect()
 }
 
 /// Hash function for the computed cache

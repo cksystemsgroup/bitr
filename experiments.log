@@ -1,2 +1,28 @@
 # experiments.log — Append-only benchmark results
 # Format: date | commit | change | solved | time | notes
+
+2026-03-31 | pre-opt baseline | baseline | 25/25 | 59.7s total
+  - tiny: 16/16, all <10ms
+  - perf: 9/9, twovars_16=36.4s, wide_mul_32=21.9s, exhaustive_28=0.95s
+  - bitwuzla comparison: BITR 59.7s total vs bitwuzla 1.19s total
+
+2026-03-31 | post-opt | benchmark+optimize vs bitwuzla/ric3 | 33/33 | 22.7s total
+  Changes:
+  - Edge merging: O(n²) → O(n) via HashMap (bvdd.rs)
+  - Solve hot path: avoid full BvddNodeKind clone, copy only needed fields
+  - BMC: combined double substitution passes into single pass
+  - BMC: conjoin constraints into single BVC (one solve instead of N)
+  - BMC: persist computed cache across steps (don't clear every step)
+  - Theory resolution: multi-variable HSC decomposition (was single-var only)
+  - Theory resolution: parallel blast budget raised (single-var 2^33, multi-var 2^32)
+  - Theory resolution: parallel threshold lowered to 100K (was 1M)
+  - Theory resolution: oracle enabled regardless of timeout mode
+  - Byte-blast: time-based bailout (500ms) prevents wasted effort on hard UNSAT
+  Results:
+  - counter_unsat: 22ms → 7ms (3x, BMC cache persistence)
+  - counter_deep_sat: 24ms → 6ms (4x, BMC optimizations)
+  - twovars_16_unsat: 36.4s → 5.2s (7x, parallel multi-var blast)
+  - wide_mul_32: 21.9s → 16.1s (1.4x, parallel single-var blast)
+  - Total: 59.7s → 22.7s (2.6x overall improvement)
+  - New benchmarks: 8 additional perf tests (wide_mul_32, twovars_16, counter_deep, etc.)
+  - Bitwuzla comparison script: benchmarks/compare_solvers.py

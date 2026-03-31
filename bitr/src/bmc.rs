@@ -192,12 +192,19 @@ pub fn bmc_check(
             }
         }
 
-        // Check assumption constraints
+        // Check assumption constraints: conjoin all into one BVC and solve once
         let mut assumption_violated = false;
-        for &constraint_bvc in constraints {
-            let resolved = substitute_states(tt, ct, bm, constraint_bvc, &state_current);
-            let is_ground = bm.is_ground(tt, resolved);
-            let terminal = mgr.make_terminal(resolved, true, is_ground);
+        if !constraints.is_empty() {
+            let mut conjoined = {
+                let first = constraints[0];
+                substitute_states(tt, ct, bm, first, &state_current)
+            };
+            for &constraint_bvc in &constraints[1..] {
+                let resolved = substitute_states(tt, ct, bm, constraint_bvc, &state_current);
+                conjoined = bm.apply(tt, ct, bvdd::types::OpKind::And, &[conjoined, resolved], 1);
+            }
+            let is_ground = bm.is_ground(tt, conjoined);
+            let terminal = mgr.make_terminal(conjoined, true, is_ground);
 
             let mut ctx = SolverContext::new(tt, ct, bm, &mut mgr);
             let result_bvdd = ctx.solve(terminal, ValueSet::singleton(1));
@@ -205,7 +212,6 @@ pub fn bmc_check(
 
             if result == SolveResult::Unsat {
                 assumption_violated = true;
-                break;
             }
         }
 
@@ -237,14 +243,16 @@ pub fn bmc_check(
         }
 
         // Advance to next step: substitute next-state functions
+        // Merge state_current and input_rename into a single map for one substitution pass
+        let mut combined_subst: HashMap<u32, BvcId> = state_current.clone();
+        for (&nid, &bvc) in &input_rename {
+            combined_subst.insert(nid, bvc);
+        }
+
         let mut new_state: HashMap<u32, BvcId> = HashMap::new();
         for sv in states {
             if let Some(next_bvc) = sv.next_bvc {
-                let mut resolved = substitute_states(tt, ct, bm, next_bvc, &state_current);
-                // Rename input variables to fresh ones for this step
-                if !input_rename.is_empty() {
-                    resolved = substitute_states(tt, ct, bm, resolved, &input_rename);
-                }
+                let resolved = substitute_states(tt, ct, bm, next_bvc, &combined_subst);
                 new_state.insert(sv.nid, resolved);
             } else {
                 let fresh_var = bm.fresh_var();
@@ -257,8 +265,8 @@ pub fn bmc_check(
         // Track step timing for adaptive budget
         last_step_time = start_time.elapsed().as_secs_f64() - step_start;
 
-        // Clear caches between steps
-        mgr.cache_clear();
+        // Clear substitution cache between steps (term-specific to current state mapping).
+        // The BVDD computed cache persists across steps since prior terms can still be useful.
         tt.clear_subst_cache();
     }
 
