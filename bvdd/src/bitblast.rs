@@ -23,6 +23,9 @@ pub struct BitBlaster<'a> {
     clauses: Vec<Vec<i32>>,
     /// Memoization: term ID -> vector of SAT literals for each output bit (LSB first)
     term_bits: HashMap<TermId, Vec<i32>>,
+    /// Gate memoization: (min_lit, max_lit, op_tag) -> output literal
+    /// op_tag: 0=AND, 1=OR, 2=XOR
+    gate_cache: HashMap<(i32, i32, u8), i32>,
     /// Constant-true literal (variable 1, forced true)
     true_lit: i32,
     /// Budget exceeded flag
@@ -36,6 +39,7 @@ impl<'a> BitBlaster<'a> {
             next_var: 2, // variable 1 reserved for true_lit
             clauses: Vec::with_capacity(4096),
             term_bits: HashMap::new(),
+            gate_cache: HashMap::new(),
             true_lit: 1,
             exceeded: false,
         };
@@ -87,10 +91,14 @@ impl<'a> BitBlaster<'a> {
         if a == b { return a; }
         if a == -b { return -self.true_lit; }
 
+        let key = (a.min(b), a.max(b), 0u8);
+        if let Some(&c) = self.gate_cache.get(&key) { return c; }
+
         let c = self.fresh_var();
         self.add_clause(vec![-a, -b, c]);
         self.add_clause(vec![a, -c]);
         self.add_clause(vec![b, -c]);
+        self.gate_cache.insert(key, c);
         c
     }
 
@@ -102,10 +110,14 @@ impl<'a> BitBlaster<'a> {
         if a == b { return a; }
         if a == -b { return self.true_lit; }
 
+        let key = (a.min(b), a.max(b), 1u8);
+        if let Some(&c) = self.gate_cache.get(&key) { return c; }
+
         let c = self.fresh_var();
         self.add_clause(vec![a, b, -c]);
         self.add_clause(vec![-a, c]);
         self.add_clause(vec![-b, c]);
+        self.gate_cache.insert(key, c);
         c
     }
 
@@ -118,11 +130,15 @@ impl<'a> BitBlaster<'a> {
         if a == b { return -self.true_lit; }
         if a == -b { return self.true_lit; }
 
+        let key = (a.min(b), a.max(b), 2u8);
+        if let Some(&c) = self.gate_cache.get(&key) { return c; }
+
         let c = self.fresh_var();
         self.add_clause(vec![-a, -b, -c]);
         self.add_clause(vec![a, b, -c]);
         self.add_clause(vec![a, -b, c]);
         self.add_clause(vec![-a, b, c]);
+        self.gate_cache.insert(key, c);
         c
     }
 

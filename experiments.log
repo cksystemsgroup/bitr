@@ -26,3 +26,18 @@
   - Total: 59.7s → 22.7s (2.6x overall improvement)
   - New benchmarks: 8 additional perf tests (wide_mul_32, twovars_16, counter_deep, etc.)
   - Bitwuzla comparison script: benchmarks/compare_solvers.py
+
+2026-04-02 | CDCL bitblaster reorder | move bitblaster from Stage 3c to 2b | 35/35 | 1.4s total
+  Changes:
+  - Moved native CDCL bit-blast (splr) from Stage 3c to Stage 2b in theory resolution cascade
+  - Previously sat after parallel blast (2^33 budget), so never fired on bottleneck benchmarks
+  - Now fires immediately after compiled blast (2^28 budget), before byte-blast and parallel blast
+  - Added gate memoization (HashMap) to bitblaster: reuses AND/OR/XOR gates for shared subexprs
+  Results:
+  - twovars_16_unsat: 25.4s → 0.004s (6,600x, CDCL replaces 2^32 exhaustive enumeration)
+  - wide_mul_32: 15.6s → 0.005s (3,200x, CDCL replaces 2^32 exhaustive enumeration)
+  - twovars_16_sat: 5.1s → 0.003s (1,500x, CDCL replaces 2^32 exhaustive enumeration)
+  - exhaustive_28: 1.0s → 1.0s (unchanged, still uses compiled blast at 2^28)
+  - All other benchmarks: unchanged (domains <= 2^28, compiled blast handles them)
+  - Total perf time: 22.7s → 1.4s (16x overall improvement)
+  - 35/35 benchmarks correct (16 tiny + 19 perf), 103 tests, 0 clippy warnings

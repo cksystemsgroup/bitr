@@ -12,8 +12,8 @@ Build a competitive BTOR2 model checker based on Bitvector Decision Diagrams (BV
 
 ## Current Status
 
-**Phase**: 10 — Optimization ready
-**Last updated**: 2026-03-21
+**Phase**: 10 — Optimization in progress
+**Last updated**: 2026-04-02
 
 ### Phase 0 (complete)
 - [x] Repository structure created
@@ -112,6 +112,11 @@ Build a competitive BTOR2 model checker based on Bitvector Decision Diagrams (BV
 - [x] Fixed Uext/Sext arity (1, not 2)
 - [x] New benchmark: shift_reg_sat (4-bit shift register, symbolic BMC)
 - [x] **14/14 benchmarks correct**, 87 tests, 0 clippy warnings
+- [x] Native CDCL bit-blasting via splr SAT solver (Tseitin encoding, gate memoization)
+- [x] CDCL bitblaster moved to Stage 2b (before byte-blast/parallel blast)
+- [x] 6,600x speedup on twovars_16_unsat (25.4s → 0.004s), 3,200x on wide_mul_32
+- [x] Total perf time: 22.7s → 1.4s (16x improvement, near-parity with bitwuzla)
+- [x] **35/35 benchmarks correct**, 103 tests, 0 clippy warnings
 
 ## Implementation Phases
 

@@ -337,11 +337,13 @@ impl<'a> SolverContext<'a> {
         }])
     }
 
-    /// Theory resolution cascade (4 stages):
-    /// 1. Boolean decomposition (1-bit comparison subterms)
-    /// 2. Generalized blast (compiled evaluator, budget 2^28)
-    /// 3. Byte-blast oracle (split widest var MSB, max_depth=4)
-    /// 4. Direct theory oracle (external solver)
+    /// Theory resolution cascade:
+    /// Stage 1 — Boolean decomposition (1-bit comparison subterms),
+    /// Stage 2 — Generalized blast (compiled evaluator, budget 2^28),
+    /// Stage 2b — CDCL bit-blast (splr SAT solver, Tseitin CNF encoding),
+    /// Stage 3 — Byte-blast (split widest var MSB, max_depth=4),
+    /// Stage 3b — Parallel compiled blast (budget 2^33 single-var, 2^32 multi-var),
+    /// Stage 4 — Direct theory oracle (external solver).
     fn theory_resolve(&mut self, bvc: BvcId, s: ValueSet) -> BvddId {
         let entry = &self.bm.get(bvc).entries[0];
         let term = entry.term;
@@ -460,22 +462,9 @@ impl<'a> SolverContext<'a> {
             return self.compiled_blast(bvc, s, &vars);
         }
 
-        // Stage 3: Byte-blast (HSC decomposition — splits widest variable MSB byte,
-        // recurses on sub-problems). Effective for multi-variable SAT and structured problems.
-        if let Some(result) = self.byte_blast(bvc, s, &vars, 0) {
-            return result;
-        }
-
-        // Stage 3b: Parallel compiled blast for domains up to 2^33 (single-var)
-        // or 2^32 (multi-var) when byte-blast couldn't handle it
-        let parallel_budget = if vars.len() == 1 { 1u128 << 33 } else { 1u128 << 32 };
-        if total_domain <= parallel_budget {
-            return self.compiled_blast(bvc, s, &vars);
-        }
-
-        // Stage 3c: Native CDCL bit-blast (splr SAT solver)
+        // Stage 2b: Native CDCL bit-blast (splr SAT solver)
         // Converts the term to CNF via Tseitin encoding and solves in-process.
-        // Avoids external oracle subprocess overhead for many benchmarks.
+        // Much faster than exhaustive enumeration for structured UNSAT and constrained SAT.
         {
             self.bitblast_calls += 1;
             let mut bb = crate::bitblast::BitBlaster::new(self.tt);
@@ -494,7 +483,7 @@ impl<'a> SolverContext<'a> {
                             return self.mgr.make_terminal(const_bvc, true, true);
                         }
                     }
-                    // Witness didn't verify — fall through to oracle
+                    // Witness didn't verify — fall through to byte-blast
                 }
                 SolveResult::Unsat => {
                     self.unsat_terminals += 1;
@@ -504,6 +493,19 @@ impl<'a> SolverContext<'a> {
                     // Budget exceeded or unsupported op — fall through
                 }
             }
+        }
+
+        // Stage 3: Byte-blast (HSC decomposition — splits widest variable MSB byte,
+        // recurses on sub-problems). Effective for multi-variable SAT and structured problems.
+        if let Some(result) = self.byte_blast(bvc, s, &vars, 0) {
+            return result;
+        }
+
+        // Stage 3b: Parallel compiled blast for domains up to 2^33 (single-var)
+        // or 2^32 (multi-var) when byte-blast couldn't handle it
+        let parallel_budget = if vars.len() == 1 { 1u128 << 33 } else { 1u128 << 32 };
+        if total_domain <= parallel_budget {
+            return self.compiled_blast(bvc, s, &vars);
         }
 
         // Stage 4: Direct theory oracle — use when available, regardless of timeout mode
