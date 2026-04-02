@@ -34,6 +34,7 @@ pub struct SolverContext<'a> {
     pub bool_decomp_calls: u64,
     pub compiled_blast_calls: u64,
     pub byte_blast_calls: u64,
+    pub bitblast_calls: u64,
     pub oracle_calls: u64,
     /// Oracle function: term→SMT-LIB2, invoke external solver
     #[allow(clippy::type_complexity)]
@@ -73,6 +74,7 @@ impl<'a> SolverContext<'a> {
             bool_decomp_calls: 0,
             compiled_blast_calls: 0,
             byte_blast_calls: 0,
+            bitblast_calls: 0,
             oracle_calls: 0,
             oracle_fn: None,
             witness: HashMap::new(),
@@ -469,6 +471,39 @@ impl<'a> SolverContext<'a> {
         let parallel_budget = if vars.len() == 1 { 1u128 << 33 } else { 1u128 << 32 };
         if total_domain <= parallel_budget {
             return self.compiled_blast(bvc, s, &vars);
+        }
+
+        // Stage 3c: Native CDCL bit-blast (splr SAT solver)
+        // Converts the term to CNF via Tseitin encoding and solves in-process.
+        // Avoids external oracle subprocess overhead for many benchmarks.
+        {
+            self.bitblast_calls += 1;
+            let mut bb = crate::bitblast::BitBlaster::new(self.tt);
+            let (result, bb_witness) = bb.solve(term, width, &s);
+            match result {
+                SolveResult::Sat => {
+                    for (var_id, value) in &bb_witness {
+                        self.witness.insert(*var_id, *value);
+                    }
+                    // Verify by evaluating the term with the witness
+                    if let Some(val) = self.tt.eval(term, &bb_witness) {
+                        let check_val = mask_for_check(val, width);
+                        if s.contains(check_val) {
+                            let const_bvc = self.bm.make_const(self.tt, self.ct, val, width);
+                            self.sat_witnesses += 1;
+                            return self.mgr.make_terminal(const_bvc, true, true);
+                        }
+                    }
+                    // Witness didn't verify — fall through to oracle
+                }
+                SolveResult::Unsat => {
+                    self.unsat_terminals += 1;
+                    return self.mgr.false_terminal();
+                }
+                SolveResult::Unknown => {
+                    // Budget exceeded or unsupported op — fall through
+                }
+            }
         }
 
         // Stage 4: Direct theory oracle — use when available, regardless of timeout mode

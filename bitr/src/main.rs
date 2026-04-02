@@ -327,7 +327,7 @@ fn solve_combinational(
         let target = ValueSet::singleton(1);
 
         let (result, solve_calls, canon_calls, decide_calls, sat_w, unsat_t, restrict_c,
-             oracle_calls, compiled_calls, witness) = {
+             oracle_calls, compiled_calls, bitblast_calls, witness) = {
             let mut ctx = SolverContext::new(
                 &mut lifted.tt,
                 &mut lifted.ct,
@@ -349,12 +349,12 @@ fn solve_combinational(
             };
             (result, ctx.solve_calls, ctx.canonicalize_calls, ctx.decide_calls,
              ctx.sat_witnesses, ctx.unsat_terminals, ctx.restrict_calls,
-             ctx.oracle_calls, ctx.compiled_blast_calls, witness)
+             ctx.oracle_calls, ctx.compiled_blast_calls, ctx.bitblast_calls, witness)
         };
 
         if verbose {
-            eprintln!("bitr: bad[{}] = {:?} (solve={}, canon={}, decide={}, oracle={}, compiled={})",
-                i, result, solve_calls, canon_calls, decide_calls, oracle_calls, compiled_calls);
+            eprintln!("bitr: bad[{}] = {:?} (solve={}, canon={}, decide={}, oracle={}, compiled={}, bitblast={})",
+                i, result, solve_calls, canon_calls, decide_calls, oracle_calls, compiled_calls, bitblast_calls);
         }
 
         if print_stats {
