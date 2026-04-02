@@ -1,0 +1,17 @@
+name,status,time_s
+arith_sat,sat,.008983148
+array_row_sat,sat,.007599084
+array_row_unsat,unsat,.006962790
+bool_unsat,unsat,.006582029
+concat_slice_sat,sat,.006362872
+counter_sat,sat,.007345150
+counter_unsat,unsat,.007117471
+ite_sat,sat,.006128537
+ite_unsat,unsat,.006538176
+multi_var_sat,sat,.006847492
+multi_var_unsat,unsat,.007334056
+shift_reg_sat,sat,.006859206
+signed_sat,sat,.006574689
+simple_sat,sat,.006490695
+simple_unsat,unsat,.005911039
+wide_sat,sat,.006119046
