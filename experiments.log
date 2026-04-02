@@ -41,3 +41,14 @@
   - All other benchmarks: unchanged (domains <= 2^28, compiled blast handles them)
   - Total perf time: 22.7s → 1.4s (16x overall improvement)
   - 35/35 benchmarks correct (16 tiny + 19 perf), 103 tests, 0 clippy warnings
+
+2026-04-02 | threshold tuning | compiled blast 2^28 → 2^16, route more through CDCL | 35/35 | 0.1s total
+  Changes:
+  - Lowered compiled blast budget from 2^28 to 2^16 (65536 domain values)
+  - Problems with domain > 65536 now go to CDCL bitblaster instead of exhaustive enumeration
+  - exhaustive_28: 1.0s → 0.005s (200x, CDCL replaces 268M-value enumeration)
+  - three_var_8_unsat: 0.13s → 0.004s (33x, CDCL replaces 16M-value enumeration)
+  - Total perf time: 1.4s → 0.1s (all 19 benchmarks under 10ms)
+  - HWMCC BV: 32/155 solved (--timeout 10, with oracle); 14/154 without oracle
+  - All 140 HWMCC BV timeouts are sequential BMC problems (0 combinational timeouts)
+  - 35/35 benchmarks correct, 103 tests, 0 clippy warnings

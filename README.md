@@ -80,13 +80,13 @@ Phases 0–9 complete. Phase 10 optimization in progress. Core solver operationa
 
 | Metric | bitr | bitwuzla | rIC3 |
 |--------|------|----------|------|
-| HW BV solved (≤500K, 10s) | 42/155 | — | — |
+| HW BV solved (≤500K, 10s) | 32/155 | — | — |
 | QF_BV (SMT-LIB2, 20s) | 10/10 | — | — |
 | QF_ABV (SMT-LIB2, 20s) | 6/6 | — | — |
 | HW Array solved (10s) | 210/321 | — | — |
 | Tiny benchmarks | 16/16 | 16/16 | — |
 | Perf benchmarks | 19/19 | 19/19 | — |
-| Total perf time (no oracle) | 1.4s | 1.1s | — |
+| Total perf time (no oracle) | 0.1s | 1.1s | — |
 
 ### bitr vs bitwuzla Comparison
 
@@ -95,15 +95,15 @@ Benchmarked on combinational and sequential BTOR2 problems (no external oracle).
 | Benchmark | bitr | bitwuzla | Ratio |
 |---|---|---|---|
 | tiny (16 combinational+sequential) | all <10ms | all <1ms | ~7x |
-| exhaustive_28 (single-var UNSAT, 28-bit) | 1.0s | 0.001s | 1000x |
+| exhaustive_28 (single-var UNSAT, 28-bit) | 5ms | 0.001s | 5x |
 | wide_mul_32 (single-var UNSAT, 32-bit) | 5ms | 0.001s | 5x |
 | shift_puzzle_sat (2-var SAT, 16-bit) | 5ms | 1ms | 5x |
-| three_var_8_unsat (3-var UNSAT, 8-bit) | 131ms | 0.5ms | 260x |
+| three_var_8_unsat (3-var UNSAT, 8-bit) | 4ms | 0.5ms | 8x |
 | twovars_16 (2-var, 16-bit) | 4ms | 0.5ms | 8x |
-| counter_deep (BMC, 16-bit) | 7ms | 136ms | **19x faster** |
-| counter_unsat (BMC, 8-bit) | 7ms | 150ms | **21x faster** |
+| counter_deep (BMC, 16-bit) | 8ms | 136ms | **17x faster** |
+| counter_unsat (BMC, 8-bit) | 9ms | 150ms | **17x faster** |
 
-**Key finding**: bitr outperforms bitwuzla on sequential BMC problems (19-21x faster) due to native transition-relation unrolling. For wide combinational problems, native CDCL bit-blasting (splr) closes the gap from 10,000-16,000x to 5-8x. The remaining gap is on exhaustive_28 (compiled blast, 1000x) and three_var_8 (multi-variable enumeration, 260x).
+**Key finding**: bitr outperforms bitwuzla on sequential BMC problems (17x faster) due to native transition-relation unrolling. For combinational problems, native CDCL bit-blasting (splr) closes the gap from 10,000-16,000x to 5-8x. All combinational HWMCC BV benchmarks now solve; remaining timeouts are sequential BMC problems.
 
 ### Optimization History
 
@@ -119,7 +119,8 @@ Benchmarked on combinational and sequential BTOR2 problems (no external oracle).
 | Byte-blast 500ms bailout | 36.4s | 5.2s | 7x |
 | CDCL bit-blast reorder (Stage 2b) | 25.4s | 0.004s | 6,600x |
 | Gate memoization in bitblaster | — | — | CNF size reduction |
-| **Total benchmark time** | **59.7s** | **1.4s** | **43x** |
+| Lower compiled blast threshold (2^16) | 1.0s | 0.005s | 200x |
+| **Total benchmark time** | **59.7s** | **0.1s** | **597x** |
 
 ### BVDD Implementation Status
 
@@ -146,7 +147,7 @@ The table below tracks each BVDD concept, its DPLL(T) analogue, and measured per
 | Stage | Strategy | Budget | Throughput |
 |---|---|---|---|
 | 1. Boolean decomposition | Branch on 1-bit comparison subterms | — | — |
-| 2. Generalized blast | Enumerate variables (packed bytecode evaluator) | 2^28 sequential | **211M eval/s** (parallel) |
+| 2. Generalized blast | Enumerate variables (packed bytecode evaluator) | 2^16 sequential | — |
 | 2b. CDCL bit-blast | Tseitin CNF encoding → splr SAT solver (in-process) | 1M vars, 5M clauses | sub-ms for 32-bit |
 | 3. Byte-blast | Split widest variable's MSB byte; enumerate 256 × LSB | depth 4; 500ms timeout | — |
 | 3b. Parallel blast | Parallel compiled evaluation for wider domains | 2^33 single-var, 2^32 multi-var | parallel (rayon) |

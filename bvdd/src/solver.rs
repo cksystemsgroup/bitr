@@ -458,7 +458,7 @@ impl<'a> SolverContext<'a> {
             .fold(1u128, |acc, d| acc.saturating_mul(d));
 
         // Stage 2: Compiled blast for domains within budget (fast sequential/parallel)
-        if total_domain <= (1u128 << 28) {
+        if total_domain <= (1u128 << 16) {
             return self.compiled_blast(bvc, s, &vars);
         }
 
