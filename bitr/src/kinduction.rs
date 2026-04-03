@@ -302,7 +302,8 @@ fn check_inductive_step(
     result
 }
 
-/// Solve a BVC using BVDD solver with oracle fallback
+/// Solve a BVC using BVDD solver with oracle fallback.
+/// K-induction formulas can be large, so keep this lightweight.
 fn solve_bvc(
     tt: &mut TermTable,
     ct: &mut ConstraintTable,
