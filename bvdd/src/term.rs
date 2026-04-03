@@ -27,6 +27,7 @@ pub struct Term {
 }
 
 /// Hash-consed term table: all terms stored uniquely
+#[derive(Clone)]
 pub struct TermTable {
     terms: Vec<Term>,
     /// Unique table: (kind, width) -> TermId

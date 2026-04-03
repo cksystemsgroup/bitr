@@ -52,3 +52,17 @@
   - HWMCC BV: 32/155 solved (--timeout 10, with oracle); 14/154 without oracle
   - All 140 HWMCC BV timeouts are sequential BMC problems (0 combinational timeouts)
   - 35/35 benchmarks correct, 103 tests, 0 clippy warnings
+
+2026-04-03 | k-induction | inductive safety proofs for sequential models | 52/155 BV
+  Changes:
+  - New module: bitr/src/kinduction.rs — k-induction prover
+  - Strategy: k-induction on cloned state (25% timeout), then BMC (75% timeout)
+  - Inductive step: checks if P holding for k consecutive steps implies P at step k+1
+  - Base case reuses standard BMC checking logic
+  - Cloned TermTable/BvcManager prevents term table pollution across phases
+  - Added BvcManager::negate() for property negation in inductive step
+  - Added Clone derives for TermTable, ConstraintTable, BvcManager
+  Results:
+  - HWMCC BV: 32/155 → 52/155 solved (+63%, 26 gained via induction, 6 lost to timeout)
+  - All 26 gained benchmarks are UNSAT (proven safe by induction at low k)
+  - 35/35 tiny+perf benchmarks correct, 103 tests, 0 clippy warnings

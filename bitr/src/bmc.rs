@@ -300,7 +300,7 @@ fn collect_ite_cond_inputs(
 }
 
 /// Count the number of nodes in a term DAG (memoized traversal)
-fn count_term_nodes(tt: &TermTable, root: TermId) -> usize {
+pub fn count_term_nodes(tt: &TermTable, root: TermId) -> usize {
     let mut visited = std::collections::HashSet::new();
     count_term_inner(tt, root, &mut visited)
 }
@@ -319,7 +319,7 @@ fn count_term_inner(tt: &TermTable, id: TermId, visited: &mut std::collections::
 
 /// Substitute state variable references in a BVC's term.
 /// Only substitutes variables that actually appear in the term (avoids wasted work).
-fn substitute_states(
+pub fn substitute_states(
     tt: &mut TermTable,
     _ct: &mut ConstraintTable,
     bm: &mut BvcManager,

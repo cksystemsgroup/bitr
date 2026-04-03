@@ -61,6 +61,7 @@ pub struct Bvc {
 }
 
 /// BVC manager: arena for all BVCs with lifted variable support
+#[derive(Clone)]
 pub struct BvcManager {
     bvcs: Vec<Bvc>,
     /// Next fresh variable ID for lifted definitions
@@ -233,6 +234,17 @@ impl BvcManager {
         result_width: BvWidth,
     ) -> BvcId {
         self.apply_structural(tt, ct, op, operands, result_width)
+    }
+
+    /// Negate a 1-bit BVC: XOR with 1
+    pub fn negate(
+        &mut self,
+        tt: &mut TermTable,
+        ct: &mut ConstraintTable,
+        id: BvcId,
+    ) -> BvcId {
+        let one = self.make_const(tt, ct, 1, 1);
+        self.apply(tt, ct, OpKind::Xor, &[id, one], 1)
     }
 
     /// Check if a BVC is ground (all entries have constant terms and TRUE constraints)

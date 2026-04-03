@@ -8,6 +8,7 @@ mod bitr;
 mod blast;
 mod oracle;
 mod bmc;
+mod kinduction;
 mod smtlib2;
 #[allow(dead_code)]
 mod stats;
@@ -255,7 +256,7 @@ fn solve_btor2(
 
     if is_sequential {
         if verbose {
-            eprintln!("bitr: sequential model, running BMC (max_bound={})", max_bound);
+            eprintln!("bitr: sequential model, running k-induction + BMC (max_bound={})", max_bound);
         }
         let state_vars: Vec<bmc::StateVar> = lifted.states.iter().map(|&(nid, init, next)| {
             let width = lifted.bm.get(
@@ -264,18 +265,54 @@ fn solve_btor2(
             bmc::StateVar { nid, width, init_bvc: init, next_bvc: next }
         }).collect();
 
-        let _bmc_config = bmc::BmcConfig {
-            max_bound,
-            timeout_s,
-            verbose,
-        };
         let input_vars: Vec<bmc::InputVar> = lifted.inputs.iter()
             .map(|&(nid, width)| bmc::InputVar { nid, width })
             .collect();
 
+        // Strategy: try k-induction on cloned state first (proves UNSAT fast),
+        // then BMC on pristine state (catches SAT). K-induction uses cloned
+        // term table so it doesn't pollute BMC's state.
+
+        // Phase 1: K-induction on cloned state (quick UNSAT proofs)
+        {
+            let mut kind_tt = lifted.tt.clone();
+            let mut kind_ct = lifted.ct.clone();
+            let mut kind_bm = lifted.bm.clone();
+
+            let kind_timeout = timeout_s * 0.25;
+            let kind_max_k = max_bound.min(10);
+            let kind_config = kinduction::KInductionConfig {
+                max_k: kind_max_k,
+                timeout_s: kind_timeout,
+                verbose,
+            };
+
+            let kind_result = kinduction::kinduction_check(
+                &kind_config,
+                &mut kind_tt,
+                &mut kind_ct,
+                &mut kind_bm,
+                &state_vars,
+                &lifted.bad_properties,
+                &lifted.constraints,
+                &input_vars,
+            );
+
+            match kind_result {
+                SolveResult::Sat | SolveResult::Unsat => return kind_result,
+                SolveResult::Unknown => {
+                    if verbose {
+                        eprintln!("bitr: k-induction inconclusive, running BMC");
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Standard BMC on pristine state (remaining time)
+        let bmc_timeout = (timeout_s * 0.75).max(1.0);
         let bmc_config = bmc::BmcConfig {
             max_bound,
-            timeout_s,
+            timeout_s: bmc_timeout,
             verbose,
         };
         bmc::bmc_check(

@@ -20,6 +20,7 @@ pub struct Constraint {
 }
 
 /// Constraint table with hash-consing and simplification
+#[derive(Clone)]
 pub struct ConstraintTable {
     constraints: Vec<Constraint>,
     /// Unique table: kind -> ConstraintId

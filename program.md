@@ -117,6 +117,8 @@ Build a competitive BTOR2 model checker based on Bitvector Decision Diagrams (BV
 - [x] 6,600x speedup on twovars_16_unsat (25.4s → 0.004s), 3,200x on wide_mul_32
 - [x] Total perf time: 22.7s → 1.4s (16x improvement, near-parity with bitwuzla)
 - [x] **35/35 benchmarks correct**, 103 tests, 0 clippy warnings
+- [x] K-induction prover (bitr/src/kinduction.rs): inductive safety proofs
+- [x] HWMCC BV: 32/155 → 52/155 solved (+63%) via inductive reasoning
 
 ## Implementation Phases
 

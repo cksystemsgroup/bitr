@@ -80,7 +80,7 @@ Phases 0–9 complete. Phase 10 optimization in progress. Core solver operationa
 
 | Metric | bitr | bitwuzla | rIC3 |
 |--------|------|----------|------|
-| HW BV solved (≤500K, 10s) | 32/155 | — | — |
+| HW BV solved (≤500K, 10s) | 52/155 | — | — |
 | QF_BV (SMT-LIB2, 20s) | 10/10 | — | — |
 | QF_ABV (SMT-LIB2, 20s) | 6/6 | — | — |
 | HW Array solved (10s) | 210/321 | — | — |
@@ -120,6 +120,7 @@ Benchmarked on combinational and sequential BTOR2 problems (no external oracle).
 | CDCL bit-blast reorder (Stage 2b) | 25.4s | 0.004s | 6,600x |
 | Gate memoization in bitblaster | — | — | CNF size reduction |
 | Lower compiled blast threshold (2^16) | 1.0s | 0.005s | 200x |
+| K-induction (inductive safety proofs) | 32/155 BV | 52/155 BV | +63% |
 | **Total benchmark time** | **59.7s** | **0.1s** | **597x** |
 
 ### BVDD Implementation Status
