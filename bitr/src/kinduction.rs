@@ -122,6 +122,12 @@ pub fn kinduction_check(
             let resolved = crate::bmc::substitute_states(tt, ct, bm, prop_bvc, state_k);
             let result = solve_bvc(tt, ct, bm, &mut mgr, &mut smt_oracle, resolved);
 
+            if config.verbose {
+                let term = bm.get(resolved).entries[0].term;
+                let term_size = crate::bmc::count_term_nodes(tt, term);
+                eprintln!("bitr: k-ind base k={}: {:?} (term_size={})", k, result, term_size);
+            }
+
             if result == SolveResult::Sat {
                 if config.verbose {
                     eprintln!("bitr: counterexample found at step {} (base case)", k);
@@ -196,7 +202,7 @@ pub fn kinduction_check(
         tt.clear_subst_cache();
     }
 
-    SolveResult::Unsat // Bounded safe (same as BMC)
+    SolveResult::Unknown // Inconclusive — let BMC run
 }
 
 /// Check the inductive step at depth k:
@@ -302,8 +308,7 @@ fn check_inductive_step(
     result
 }
 
-/// Solve a BVC using BVDD solver with oracle fallback.
-/// K-induction formulas can be large, so keep this lightweight.
+/// Solve a BVC using tiered solving: BVDD (small+narrow) → bitblaster (medium) → oracle (large).
 fn solve_bvc(
     tt: &mut TermTable,
     ct: &mut ConstraintTable,
@@ -313,12 +318,15 @@ fn solve_bvc(
     bvc: BvcId,
 ) -> SolveResult {
     let term = bm.get(bvc).entries[0].term;
+    let width = bm.get(bvc).width;
     let term_size = crate::bmc::count_term_nodes(tt, term);
     let is_ground = bm.is_ground(tt, bvc);
 
-    if term_size <= 10_000 {
+    // Tier 1: BVDD solver for small terms (time-bounded to avoid hanging on wide bitvectors)
+    let mut result = if term_size <= 10_000 {
         let terminal = mgr.make_terminal(bvc, true, is_ground);
         let mut ctx = SolverContext::new(tt, ct, bm, mgr);
+        ctx.solve_timeout_s = 5.0;
         if let Some(ref mut oracle) = smt_oracle {
             ctx.set_oracle(|t, term, width, target| {
                 oracle.check(t, term, width, target)
@@ -326,14 +334,34 @@ fn solve_bvc(
         }
         let result_bvdd = ctx.solve(terminal, ValueSet::singleton(1));
         ctx.get_result(result_bvdd)
-    } else if term_size > 50_000 {
-        if let Some(ref mut oracle) = smt_oracle {
-            let width = bm.get(bvc).width;
-            oracle.check(tt, term, width, ValueSet::singleton(1))
-        } else {
-            SolveResult::Unknown
-        }
     } else {
         SolveResult::Unknown
+    };
+
+    // Tier 2: CDCL bitblaster for small-to-medium terms (or wide terms skipped above)
+    if result == SolveResult::Unknown && term_size <= 200_000 {
+        let target = ValueSet::singleton(1);
+        let mut bb = bvdd::bitblast::BitBlaster::new(tt);
+        let (bb_result, bb_witness) = bb.solve(term, width, &target);
+        match bb_result {
+            SolveResult::Sat => {
+                if let Some(val) = tt.eval(term, &bb_witness) {
+                    if target.contains((val & 1) as u8) {
+                        result = SolveResult::Sat;
+                    }
+                }
+            }
+            SolveResult::Unsat => result = SolveResult::Unsat,
+            SolveResult::Unknown => {}
+        }
     }
+
+    // Tier 3: External oracle for large terms
+    if result == SolveResult::Unknown {
+        if let Some(ref mut oracle) = smt_oracle {
+            result = oracle.check(tt, term, width, ValueSet::singleton(1));
+        }
+    }
+
+    result
 }

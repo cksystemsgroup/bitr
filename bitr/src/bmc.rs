@@ -130,7 +130,10 @@ pub fn bmc_check(
         }
 
         if config.verbose {
-            eprintln!("bitr: BMC step {} (terms={})", k, tt.len());
+            let cache_total = mgr.cache_hits + mgr.cache_misses;
+            let cache_rate = if cache_total > 0 { mgr.cache_hits as f64 / cache_total as f64 * 100.0 } else { 0.0 };
+            eprintln!("bitr: BMC step {} (terms={}, cache={:.0}% of {}, elapsed={:.1}s)",
+                k, tt.len(), cache_rate, cache_total, start_time.elapsed().as_secs_f64());
         }
 
         // Check bad properties at this step, conjoined with constraints
@@ -152,29 +155,30 @@ pub fn bmc_check(
 
             let is_ground = bm.is_ground(tt, resolved_bvc);
 
-            // Tiered solving: BVDD (small) → bitblaster (medium) → oracle (large)
+            // Tiered solving: BVDD (small, time-bounded) → bitblaster (medium) → oracle (large)
             let width = bm.get(resolved_bvc).width;
+            let prop_start = Instant::now();
+            let mut tier_used = "none";
             let mut result = if term_size <= 10_000 {
+                tier_used = "bvdd";
                 let terminal = mgr.make_terminal(resolved_bvc, true, is_ground);
                 let mut ctx = SolverContext::new(tt, ct, bm, &mut mgr);
+                // Time-bound the BVDD solver to avoid hanging on wide bitvectors
+                ctx.solve_timeout_s = 5.0;
                 if let Some(ref mut oracle) = smt_oracle {
                     ctx.set_oracle(|t, term, width, target| {
                         oracle.check(t, term, width, target)
                     });
                 }
                 let result_bvdd = ctx.solve(terminal, ValueSet::singleton(1));
-                let r = ctx.get_result(result_bvdd);
-                if config.verbose {
-                    eprintln!("bitr: step {} bad[{}] = {:?} (solve_calls={}, term_size={})",
-                        k, prop_idx, r, ctx.solve_calls, term_size);
-                }
-                r
+                ctx.get_result(result_bvdd)
             } else {
                 SolveResult::Unknown
             };
 
-            // Use native CDCL bitblaster for medium terms (10K-200K nodes)
+            // CDCL bitblaster for medium terms or wide terms that skipped BVDD
             if result == SolveResult::Unknown && term_size <= 200_000 {
+                tier_used = "bitblast";
                 let target = ValueSet::singleton(1);
                 let mut bb = bvdd::bitblast::BitBlaster::new(tt);
                 let (bb_result, bb_witness) = bb.solve(term, width, &target);
@@ -193,21 +197,20 @@ pub fn bmc_check(
                     SolveResult::Unsat => result = SolveResult::Unsat,
                     SolveResult::Unknown => {} // Budget exceeded, fall through
                 }
-                if config.verbose {
-                    eprintln!("bitr: step {} bad[{}] bitblast={:?} (term_size={}, vars={}, clauses={})",
-                        k, prop_idx, result, term_size, bb.num_vars(), bb.num_clauses());
-                }
             }
 
             // External oracle for very large terms
             if result == SolveResult::Unknown && term_size > 50_000 {
                 if let Some(ref mut oracle) = smt_oracle {
+                    tier_used = "oracle";
                     result = oracle.check(tt, term, width, ValueSet::singleton(1));
-                    if config.verbose {
-                        eprintln!("bitr: step {} bad[{}] oracle={:?} (term_size={})",
-                            k, prop_idx, result, term_size);
-                    }
                 }
+            }
+
+            if config.verbose {
+                let prop_ms = prop_start.elapsed().as_secs_f64() * 1000.0;
+                eprintln!("bitr: step {} bad[{}] = {:?} (tier={}, term_size={}, {:.1}ms)",
+                    k, prop_idx, result, tier_used, term_size, prop_ms);
             }
 
             if result == SolveResult::Sat {
