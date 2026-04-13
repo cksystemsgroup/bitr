@@ -261,6 +261,60 @@ impl<'a> BitBlaster<'a> {
         result
     }
 
+    // ==================== Division ====================
+
+    /// Unsigned N-bit division via restoring division circuit.
+    /// Returns (quotient, remainder). Division by zero: quotient = all-ones, remainder = dividend.
+    fn udivrem_bits(&mut self, a: &[i32], b: &[i32]) -> (Vec<i32>, Vec<i32>) {
+        let n = a.len();
+        let false_lit = -self.true_lit;
+        let true_lit = self.true_lit;
+
+        // Check if divisor is zero (for BTOR2 semantics)
+        let b_is_zero = {
+            let b_or = self.redor_bits(b);
+            -b_or // b_is_zero = NOT(any bit set)
+        };
+
+        // Restoring division: work with (n+1)-bit remainder to detect overflow
+        // Initialize remainder to 0
+        let mut rem: Vec<i32> = vec![false_lit; n];
+        let mut quot: Vec<i32> = vec![false_lit; n];
+
+        // Process from MSB to LSB
+        for i in (0..n).rev() {
+            if self.exceeded { break; }
+
+            // Shift remainder left by 1, bring in next dividend bit
+            for j in (1..n).rev() {
+                rem[j] = rem[j - 1];
+            }
+            rem[0] = a[i];
+
+            // Trial subtraction: rem - b
+            let not_b = self.not_bits(b);
+            let (diff, carry) = self.adder(&rem, &not_b, true_lit);
+            // carry = 1 means rem >= b (no borrow)
+            let rem_ge_b = carry;
+
+            // Quotient bit = rem >= b
+            quot[i] = rem_ge_b;
+
+            // If rem >= b, use diff (rem - b); else keep rem
+            for j in 0..n {
+                rem[j] = self.ite_gate(rem_ge_b, diff[j], rem[j]);
+            }
+        }
+
+        // Apply division-by-zero semantics: if b == 0, quot = all-ones, rem = a
+        for i in 0..n {
+            quot[i] = self.ite_gate(b_is_zero, true_lit, quot[i]);
+            rem[i] = self.ite_gate(b_is_zero, a[i], rem[i]);
+        }
+
+        (quot, rem)
+    }
+
     // ==================== Comparisons ====================
 
     /// Unsigned less-than: true iff a < b
@@ -503,9 +557,92 @@ impl<'a> BitBlaster<'a> {
                         return None;
                     }
 
-                    // Unsupported: division, memory
-                    OpKind::Udiv | OpKind::Urem | OpKind::Sdiv |
-                    OpKind::Srem | OpKind::Smod |
+                    // Unsigned division/remainder
+                    OpKind::Udiv => {
+                        if arg_bits[0].len() > 32 { return None; }
+                        let (quot, _) = self.udivrem_bits(&arg_bits[0], &arg_bits[1]);
+                        quot
+                    }
+                    OpKind::Urem => {
+                        if arg_bits[0].len() > 32 { return None; }
+                        let (_, rem) = self.udivrem_bits(&arg_bits[0], &arg_bits[1]);
+                        rem
+                    }
+                    // Signed division: convert to unsigned, divide, adjust sign
+                    // BTOR2: sdiv rounds toward zero, srem sign matches dividend
+                    OpKind::Sdiv => {
+                        if arg_bits[0].len() > 32 { return None; }
+                        let n = arg_bits[0].len();
+                        let a_sign = arg_bits[0][n - 1];
+                        let b_sign = arg_bits[1][n - 1];
+                        // Absolute values
+                        let abs_a = {
+                            let neg = self.neg_bits(&arg_bits[0]);
+                            (0..n).map(|i| self.ite_gate(a_sign, neg[i], arg_bits[0][i])).collect::<Vec<_>>()
+                        };
+                        let abs_b = {
+                            let neg = self.neg_bits(&arg_bits[1]);
+                            (0..n).map(|i| self.ite_gate(b_sign, neg[i], arg_bits[1][i])).collect::<Vec<_>>()
+                        };
+                        let (quot, _) = self.udivrem_bits(&abs_a, &abs_b);
+                        // Negate result if signs differ
+                        let neg_quot = self.neg_bits(&quot);
+                        let diff_sign = self.xor_gate(a_sign, b_sign);
+                        (0..n).map(|i| self.ite_gate(diff_sign, neg_quot[i], quot[i])).collect()
+                    }
+                    OpKind::Srem => {
+                        if arg_bits[0].len() > 32 { return None; }
+                        let n = arg_bits[0].len();
+                        let a_sign = arg_bits[0][n - 1];
+                        let b_sign = arg_bits[1][n - 1];
+                        let abs_a = {
+                            let neg = self.neg_bits(&arg_bits[0]);
+                            (0..n).map(|i| self.ite_gate(a_sign, neg[i], arg_bits[0][i])).collect::<Vec<_>>()
+                        };
+                        let abs_b = {
+                            let neg = self.neg_bits(&arg_bits[1]);
+                            (0..n).map(|i| self.ite_gate(b_sign, neg[i], arg_bits[1][i])).collect::<Vec<_>>()
+                        };
+                        let (_, rem) = self.udivrem_bits(&abs_a, &abs_b);
+                        // Remainder sign matches dividend
+                        let neg_rem = self.neg_bits(&rem);
+                        (0..n).map(|i| self.ite_gate(a_sign, neg_rem[i], rem[i])).collect()
+                    }
+                    // Signed modulo: result sign matches divisor
+                    OpKind::Smod => {
+                        if arg_bits[0].len() > 32 { return None; }
+                        let n = arg_bits[0].len();
+                        let a_sign = arg_bits[0][n - 1];
+                        let b_sign = arg_bits[1][n - 1];
+                        let abs_a = {
+                            let neg = self.neg_bits(&arg_bits[0]);
+                            (0..n).map(|i| self.ite_gate(a_sign, neg[i], arg_bits[0][i])).collect::<Vec<_>>()
+                        };
+                        let abs_b = {
+                            let neg = self.neg_bits(&arg_bits[1]);
+                            (0..n).map(|i| self.ite_gate(b_sign, neg[i], arg_bits[1][i])).collect::<Vec<_>>()
+                        };
+                        let (_, rem) = self.udivrem_bits(&abs_a, &abs_b);
+                        // Check if remainder is zero
+                        let rem_zero = {
+                            let r = self.redor_bits(&rem);
+                            -r
+                        };
+                        // If remainder is zero, result is zero
+                        // Otherwise: if signs differ, result = b - rem; else result = rem
+                        // (smod adjusts so result sign matches divisor)
+                        let neg_rem = self.neg_bits(&rem);
+                        let signed_rem: Vec<i32> = (0..n).map(|i| self.ite_gate(a_sign, neg_rem[i], rem[i])).collect();
+                        let adjusted = self.add_bits(&signed_rem, &arg_bits[1]);
+                        let diff_sign = self.xor_gate(a_sign, b_sign);
+                        let need_adjust = self.and_gate(diff_sign, -rem_zero);
+                        (0..n).map(|i| {
+                            let v = self.ite_gate(need_adjust, adjusted[i], rem[i]);
+                            self.ite_gate(rem_zero, -self.true_lit, v)
+                        }).collect()
+                    }
+
+                    // Unsupported: memory
                     OpKind::Read | OpKind::Write => return None,
                 }
             }
@@ -800,6 +937,70 @@ mod tests {
         let (result, witness) = bb.solve(eq, 1, &target);
         assert_eq!(result, SolveResult::Sat);
         assert_eq!(witness[&1], 5);
+    }
+
+    #[test]
+    fn test_bitblast_udiv_sat() {
+        let mut tt = TermTable::new();
+        // 15 / x == 5 (8-bit) → x = 3
+        let c15 = tt.make_const(15, 8);
+        let x = tt.make_var(1, 8);
+        let div = tt.make_app(OpKind::Udiv, vec![c15, x], 8);
+        let mut target = ValueSet::EMPTY;
+        target = target.insert(5);
+
+        let mut bb = BitBlaster::new(&tt);
+        let (result, witness) = bb.solve(div, 8, &target);
+        assert_eq!(result, SolveResult::Sat);
+        assert_eq!(witness[&1], 3);
+    }
+
+    #[test]
+    fn test_bitblast_urem_sat() {
+        let mut tt = TermTable::new();
+        // 17 % x == 2 (8-bit) → x could be 3, 5, 15
+        let c17 = tt.make_const(17, 8);
+        let x = tt.make_var(1, 8);
+        let rem = tt.make_app(OpKind::Urem, vec![c17, x], 8);
+        let mut target = ValueSet::EMPTY;
+        target = target.insert(2);
+
+        let mut bb = BitBlaster::new(&tt);
+        let (result, witness) = bb.solve(rem, 8, &target);
+        assert_eq!(result, SolveResult::Sat);
+        let vx = witness[&1];
+        assert!(vx > 0 && 17 % vx == 2, "17 % {} != 2", vx);
+    }
+
+    #[test]
+    fn test_bitblast_udiv_by_zero() {
+        let mut tt = TermTable::new();
+        // 42 / 0 == 255 (8-bit, BTOR2: div by zero = all-ones)
+        let c42 = tt.make_const(42, 8);
+        let zero = tt.make_const(0, 8);
+        let div = tt.make_app(OpKind::Udiv, vec![c42, zero], 8);
+        let mut target = ValueSet::EMPTY;
+        target = target.insert(255);
+
+        let mut bb = BitBlaster::new(&tt);
+        let (result, _) = bb.solve(div, 8, &target);
+        assert_eq!(result, SolveResult::Sat);
+    }
+
+    #[test]
+    fn test_bitblast_sdiv_sat() {
+        let mut tt = TermTable::new();
+        // (-6) / 3 == -2 (8-bit signed)
+        // -6 = 0xFA = 250, 3 = 3, -2 = 0xFE = 254
+        let neg6 = tt.make_const(250, 8); // -6 in two's complement
+        let three = tt.make_const(3, 8);
+        let div = tt.make_app(OpKind::Sdiv, vec![neg6, three], 8);
+        let mut target = ValueSet::EMPTY;
+        target = target.insert(254); // -2 & 0xFF
+
+        let mut bb = BitBlaster::new(&tt);
+        let (result, _) = bb.solve(div, 8, &target);
+        assert_eq!(result, SolveResult::Sat);
     }
 
     #[test]
