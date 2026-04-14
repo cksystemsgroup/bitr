@@ -276,7 +276,9 @@ fn solve_btor2(
         // term table so it doesn't pollute BMC's state.
 
         // Phase 1: K-induction on cloned state (quick UNSAT proofs)
-        // Use small budget — most inductive proofs succeed at k=0 or k=1
+        // Budget: 25% of timeout, max k=10. Actual elapsed time is measured
+        // so BMC gets all remaining time (not just a fixed 75%).
+        let phase1_start = std::time::Instant::now();
         {
             let mut kind_tt = lifted.tt.clone();
             let mut kind_ct = lifted.ct.clone();
@@ -311,8 +313,9 @@ fn solve_btor2(
             }
         }
 
-        // Phase 2: Standard BMC on pristine state (remaining time)
-        let bmc_timeout = (timeout_s * 0.75).max(1.0);
+        // Phase 2: Standard BMC on pristine state (all remaining time)
+        let kind_elapsed = phase1_start.elapsed().as_secs_f64();
+        let bmc_timeout = (timeout_s - kind_elapsed).max(1.0);
         let bmc_config = bmc::BmcConfig {
             max_bound,
             timeout_s: bmc_timeout,
