@@ -163,8 +163,8 @@ pub fn bmc_check(
                 tier_used = "bvdd";
                 let terminal = mgr.make_terminal(resolved_bvc, true, is_ground);
                 let mut ctx = SolverContext::new(tt, ct, bm, &mut mgr);
-                // Time-bound the BVDD solver to avoid hanging on wide bitvectors
-                ctx.solve_timeout_s = 5.0;
+                // Scale BVDD timeout with term size: 1s for tiny, up to 5s for 10K
+                ctx.solve_timeout_s = 1.0 + (term_size as f64 / 2500.0);
                 if let Some(ref mut oracle) = smt_oracle {
                     ctx.set_oracle(|t, term, width, target| {
                         oracle.check(t, term, width, target)
@@ -305,7 +305,7 @@ pub fn bmc_check(
 }
 
 /// Find input variables used as ITE conditions in a term (likely reset signals)
-fn collect_ite_cond_inputs(
+pub fn collect_ite_cond_inputs(
     tt: &TermTable,
     term: TermId,
     input_nids: &std::collections::HashSet<u32>,
