@@ -36,6 +36,8 @@ pub struct BitBlaster<'a> {
     timeout_s: f64,
     /// Start time for timeout
     start_time: std::time::Instant,
+    /// Pre-allocated variable literals: var_id -> SAT literal vector (for incremental BMC)
+    var_lits: HashMap<u32, Vec<i32>>,
 }
 
 impl<'a> BitBlaster<'a> {
@@ -50,10 +52,32 @@ impl<'a> BitBlaster<'a> {
             exceeded: false,
             timeout_s: 0.0,
             start_time: std::time::Instant::now(),
+            var_lits: HashMap::new(),
         };
         // Force variable 1 = true
         bb.clauses.push(vec![1]);
         bb
+    }
+
+    /// Set pre-allocated SAT literals for a variable (for incremental BMC).
+    /// When blast_term encounters Var(var_id), it returns these literals instead of fresh ones.
+    pub fn set_var_lits(&mut self, var_id: u32, lits: Vec<i32>) {
+        self.var_lits.insert(var_id, lits);
+    }
+
+    /// Get the next SAT variable ID that would be allocated
+    pub fn next_var_id(&self) -> i32 {
+        self.next_var
+    }
+
+    /// Allocate fresh SAT variables and return them (for external use in incremental BMC)
+    pub fn alloc_vars(&mut self, n: u16) -> Vec<i32> {
+        self.fresh_vars(n)
+    }
+
+    /// Take the accumulated clauses (moves them out)
+    pub fn take_clauses(&mut self) -> Vec<Vec<i32>> {
+        std::mem::take(&mut self.clauses)
     }
 
     /// Set a wall-clock timeout for encoding (seconds)
@@ -459,8 +483,12 @@ impl<'a> BitBlaster<'a> {
                 }
                 bits
             }
-            TermKind::Var(_) => {
-                self.fresh_vars(width)
+            TermKind::Var(var_id) => {
+                if let Some(lits) = self.var_lits.get(&var_id) {
+                    lits.clone()
+                } else {
+                    self.fresh_vars(width)
+                }
             }
             TermKind::App { op, args, slice_upper, slice_lower } => {
                 // Recursively blast arguments
