@@ -722,4 +722,73 @@ mod tests {
         assert!(data_uses.contains(&30),
             "dual-use input must be flagged as data use, disqualifying reset status");
     }
+
+    /// A5: substitute_states should replace state-var references in a BVC's
+    /// term with the *current* state BVCs, leaving unrelated variables alone.
+    /// When a state is mapped to a constant, subst_and_fold should collapse it.
+    #[test]
+    fn test_substitute_states_replaces_only_referenced_vars() {
+        use bvdd::term::TermTable;
+        use bvdd::constraint::ConstraintTable;
+        use bvdd::bvc::{BvcManager, BvcEntry};
+
+        let mut tt = TermTable::new();
+        let mut ct = ConstraintTable::new();
+        let mut bm = BvcManager::new();
+
+        // term: (s + 7) where s is state var nid 100 (width 8).
+        let s = tt.make_var(100, 8);
+        let seven = tt.make_const(7, 8);
+        let s_plus_7 = tt.make_app(bvdd::types::OpKind::Add, vec![s, seven], 8);
+        let orig_bvc = bm.alloc(8, vec![BvcEntry {
+            term: s_plus_7,
+            constraint: ct.true_id(),
+        }]);
+
+        // Map s -> const 5. Substituting and folding should produce const 12.
+        let mut state_current: HashMap<u32, BvcId> = HashMap::new();
+        let five_bvc = bm.make_const(&mut tt, &ct, 5, 8);
+        state_current.insert(100, five_bvc);
+
+        let resolved = substitute_states(&mut tt, &mut ct, &mut bm, orig_bvc, &state_current);
+        let resolved_term = bm.get(resolved).entries[0].term;
+        // After subst_and_fold(s -> 5), term should be a constant 12.
+        match tt.get(resolved_term).kind {
+            bvdd::term::TermKind::Const(v) => assert_eq!(v, 12,
+                "folded result must be 5 + 7 = 12"),
+            _ => panic!("expected constant result after folding; got {:?}",
+                tt.get(resolved_term).kind),
+        }
+    }
+
+    /// A5: substitute_states is a no-op when the state_current map doesn't
+    /// reference any variable in the term. Prevents accidental rewriting.
+    #[test]
+    fn test_substitute_states_skips_unreferenced() {
+        use bvdd::term::TermTable;
+        use bvdd::constraint::ConstraintTable;
+        use bvdd::bvc::{BvcManager, BvcEntry};
+
+        let mut tt = TermTable::new();
+        let mut ct = ConstraintTable::new();
+        let mut bm = BvcManager::new();
+
+        // term references nid 200 only.
+        let v = tt.make_var(200, 4);
+        let orig_bvc = bm.alloc(4, vec![BvcEntry {
+            term: v,
+            constraint: ct.true_id(),
+        }]);
+
+        // state_current maps nid 999 (unrelated).
+        let mut state_current: HashMap<u32, BvcId> = HashMap::new();
+        let zero = bm.make_const(&mut tt, &ct, 0, 4);
+        state_current.insert(999, zero);
+
+        let resolved = substitute_states(&mut tt, &mut ct, &mut bm, orig_bvc, &state_current);
+        let orig_term = bm.get(orig_bvc).entries[0].term;
+        let resolved_term = bm.get(resolved).entries[0].term;
+        assert_eq!(resolved_term, orig_term,
+            "substitution must be a no-op when no referenced variables are mapped");
+    }
 }
