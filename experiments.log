@@ -213,3 +213,48 @@
   - All 16 tiny benchmarks correct under --verify and under
     --verify --incremental-bmc. Zero oracle disagreements.
   - HWMCC BV not re-measured (full sweep pending).
+
+2026-04-17 | HWMCC BV measurement + constraint-accumulation soundness fix
+  Plan: /Users/ck/.claude/plans/make-a-plan-on-melodic-dolphin.md
+
+  The first post-Phase-A+B+C2 sweep (results/bv_phaseABC_ibmc.csv,
+  --incremental-bmc, 60s via scripts/run_sweep.py) exposed a wrong-SAT verdict
+  on picorv32-check-p09 (refs avr/avr_dp/nuxmv: unsat; we: sat). Root cause was
+  TWO soundness bugs:
+
+  1. BMC and k-induction base case conjoined bad(state_k) with constraint(state_k)
+     only, not with constraint(state_i) for i=0..k. This let the SAT solver find
+     spurious traces that violated earlier-step constraints.
+     Fix: accumulate constraint(state_i) across steps into a running AND; conjoin
+     the accumulated constraint with bad before every property check.
+
+  2. Reset-signal heuristic (zeroing width-1 ITE-cond inputs at step > 0) was
+     fundamentally unsound — both too aggressive (zeroing true inputs) and too
+     conservative under A5's fence (missing real resets). No shape-based
+     identification works; needs BTOR2-level annotation or principled analysis.
+     Fix: every input is fresh per step, no heuristic bindings.
+
+  Commit: def492c.
+
+  Re-measurement (results/bv_postfix.csv, same config):
+  - Pre-fix  : 35/155 solved (15 sat + 20 unsat) — includes 3+ confirmed wrong SATs
+  - Post-fix : 29/155 solved ( 9 sat + 20 unsat) — zero confirmed wrong SATs
+
+  All 6 benchmarks that "lost SAT" in the post-fix run were checked against
+  reference solvers (avr, avr_dp, nuxmv, btormc, btor2-selectmc):
+  - a16-p128: was sat, refs say UNSAT → previously WRONG
+  - a16-p148: was sat, refs say UNSAT → previously WRONG
+  - picorv32-check-p09: was sat, refs say UNSAT → previously WRONG (triggering)
+  - arbitrated_top_n5_w128_d128_e0: refs all unknown → status unclear
+  - picorv32_mutCY_nomem-p8: refs all unknown → status unclear
+  - shift_register_top_w32_d64_e0: btor2-selectmc says SAT → possibly legit loss
+
+  Apr-15 baseline (bv_300s.csv, 74/155) was heavily polluted: A1 exposed 40+
+  unsound UNSAT claims (bound-exhausted returned as Unsat), and at least 3 SATs
+  were spurious. The real sound baseline at 60s is 29/155.
+
+  Next moves (per plan, correctness > performance):
+  - Longer timeout sweep to recover Unknowns that are tractable with more time.
+  - Phase D: inductive generalization to unlock kind_only timeouts.
+  - Investigate shift_register_top_w32_d64_e0 specifically — either our lifter
+    is missing something or incremental BMC is slower than the legacy path.
