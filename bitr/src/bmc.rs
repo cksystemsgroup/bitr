@@ -89,6 +89,13 @@ pub fn bmc_check(
     // Track term sizes to detect blowup
     let mut max_term_size: usize = 0;
 
+    // Accumulated constraint history: AND of constraint(state_i, input_i)
+    // for every step i = 0..k seen so far. Soundness requires checking
+    // bad(state_k) ∧ constraint(state_0) ∧ ... ∧ constraint(state_k), not just
+    // bad(state_k) ∧ constraint(state_k) — otherwise we accept traces that
+    // violated earlier-step constraints (witnessed on picorv32-check-p09).
+    let mut accumulated_constraints: Option<BvcId> = None;
+
     // Pre-compute which inputs need fresh renaming at each step
     // (those that appear in next-state functions)
     let inputs_in_next: std::collections::HashSet<u32> = {
@@ -177,13 +184,23 @@ pub fn bmc_check(
                 k, tt.len(), cache_rate, cache_total, start_time.elapsed().as_secs_f64());
         }
 
-        // Check bad properties at this step, conjoined with constraints
+        // Extend the accumulated constraint history with constraint(state_k).
+        // This must precede the bad check so the check sees all prior steps'
+        // constraints too.
+        for &c in constraints.iter() {
+            let resolved_c = substitute_states(tt, ct, bm, c, &state_current);
+            accumulated_constraints = Some(match accumulated_constraints {
+                None => resolved_c,
+                Some(prev) => bm.apply(tt, ct, bvdd::types::OpKind::And, &[prev, resolved_c], 1),
+            });
+        }
+
+        // Check bad properties at this step, conjoined with ALL accumulated
+        // step constraints (0..k).
         for (prop_idx, &bad_bvc) in bad_properties.iter().enumerate() {
-            // Conjoin bad property with all constraint assumptions
             let mut prop_bvc = bad_bvc;
-            for &c in constraints.iter() {
-                let resolved_c = substitute_states(tt, ct, bm, c, &state_current);
-                prop_bvc = bm.apply(tt, ct, bvdd::types::OpKind::And, &[prop_bvc, resolved_c], 1);
+            if let Some(acc) = accumulated_constraints {
+                prop_bvc = bm.apply(tt, ct, bvdd::types::OpKind::And, &[prop_bvc, acc], 1);
             }
             let resolved_bvc = substitute_states(tt, ct, bm, prop_bvc, &state_current);
 
@@ -327,21 +344,21 @@ pub fn bmc_check(
         let mut input_rename: HashMap<u32, BvcId> = HashMap::new();
         for iv in inputs {
             if inputs_in_next.contains(&iv.nid) {
-                // Check if this input is used as an ITE condition in next-state
-                // (pattern: ite(input, init_val, compute) — likely a reset signal)
-                let is_ite_cond = inputs_as_ite_cond.contains(&iv.nid);
-                if is_ite_cond && iv.width == 1 {
-                    // Reset signal: set to 0 (no reset) for steps > 0
-                    let const_bvc = bm.make_const(tt, ct, 0, 1);
-                    input_rename.insert(iv.nid, const_bvc);
-                } else {
-                    // Data input: create fresh variable
-                    let fresh_id = bm.fresh_var();
-                    let fresh_bvc = bm.make_input(tt, ct, fresh_id, iv.width);
-                    input_rename.insert(iv.nid, fresh_bvc);
-                }
+                // SOUNDNESS: every input is FRESH at every step. The previous
+                // reset-signal heuristic (zeroing width-1 ITE-cond inputs after
+                // step 0) plus A5's fence both produced wrong verdicts on some
+                // benchmarks (e.g., picorv32-check-p09, where ref-solvers agree
+                // UNSAT but we claimed SAT when the "reset" was free to toggle).
+                // Identifying true reset signals requires BTOR2-level annotation
+                // or principled analysis, not a shape heuristic.
+                let fresh_id = bm.fresh_var();
+                let fresh_bvc = bm.make_input(tt, ct, fresh_id, iv.width);
+                input_rename.insert(iv.nid, fresh_bvc);
             }
         }
+        // `inputs_as_ite_cond` is retained in the function only for the A5
+        // tests' benefit; it's no longer consulted at step advancement.
+        let _ = &inputs_as_ite_cond;
 
         // Advance to next step: substitute next-state functions
         // Merge state_current and input_rename into a single map for one substitution pass

@@ -69,9 +69,13 @@ pub fn kinduction_check(
     //          ∧ Bad(s_k)
     // If UNSAT → induction holds at depth k → property is SAFE.
 
-    // Base case: standard BMC from initial states
-    // We track state bindings at each step for the base case
+    // Base case: standard BMC from initial states.
+    // We track state bindings at each step for the base case AND accumulate
+    // constraint(state_i) for all steps i seen so far — soundness requires
+    // checking bad(state_k) under ALL prior-step constraints, not just
+    // constraint(state_k). See bmc.rs for the same fix.
     let mut base_states: Vec<HashMap<u32, BvcId>> = Vec::new();
+    let mut base_accumulated_constraints: Option<BvcId> = None;
 
     // Initialize step 0
     let mut state_current: HashMap<u32, BvcId> = HashMap::new();
@@ -145,12 +149,20 @@ pub fn kinduction_check(
 
         // === BASE CASE: check bad property at step k ===
         let state_k = &base_states[k as usize];
+        // Extend accumulated constraint history with constraint(state_k) before
+        // the bad check.
+        for &c in constraints {
+            let resolved_c = crate::bmc::substitute_states(tt, ct, bm, c, state_k);
+            base_accumulated_constraints = Some(match base_accumulated_constraints {
+                None => resolved_c,
+                Some(prev) => bm.apply(tt, ct, OpKind::And, &[prev, resolved_c], 1),
+            });
+        }
         let mut base_failed = false;
         for &bad_bvc in bad_properties {
             let mut prop_bvc = bad_bvc;
-            for &c in constraints {
-                let resolved_c = crate::bmc::substitute_states(tt, ct, bm, c, state_k);
-                prop_bvc = bm.apply(tt, ct, OpKind::And, &[prop_bvc, resolved_c], 1);
+            if let Some(acc) = base_accumulated_constraints {
+                prop_bvc = bm.apply(tt, ct, OpKind::And, &[prop_bvc, acc], 1);
             }
             let resolved = crate::bmc::substitute_states(tt, ct, bm, prop_bvc, state_k);
             // Base-case solve gets at most the remaining k-induction budget.
@@ -221,22 +233,17 @@ pub fn kinduction_check(
             eprintln!("bitr: k-induction skipping inductive step (term_count={})", term_count);
         }
 
-        // Advance base case to step k+1 (with reset signal handling, same as BMC)
+        // Advance base case to step k+1 — fresh inputs per step (no reset
+        // heuristic, see bmc.rs for rationale).
         let mut input_rename: HashMap<u32, BvcId> = HashMap::new();
         for iv in inputs {
             if inputs_in_next.contains(&iv.nid) {
-                let is_ite_cond = inputs_as_ite_cond.contains(&iv.nid);
-                if is_ite_cond && iv.width == 1 {
-                    // Reset signal: set to 0 (no reset) for steps > 0
-                    let const_bvc = bm.make_const(tt, ct, 0, 1);
-                    input_rename.insert(iv.nid, const_bvc);
-                } else {
-                    let fresh_id = bm.fresh_var();
-                    let fresh_bvc = bm.make_input(tt, ct, fresh_id, iv.width);
-                    input_rename.insert(iv.nid, fresh_bvc);
-                }
+                let fresh_id = bm.fresh_var();
+                let fresh_bvc = bm.make_input(tt, ct, fresh_id, iv.width);
+                input_rename.insert(iv.nid, fresh_bvc);
             }
         }
+        let _ = &inputs_as_ite_cond;
 
         let cur = base_states.last().unwrap().clone();
         let mut combined_subst: HashMap<u32, BvcId> = cur;
