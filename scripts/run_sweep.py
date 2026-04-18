@@ -3,7 +3,7 @@
 
 Usage:
     python3 scripts/run_sweep.py --list /tmp/bv155.txt --out results/bv_phaseABC.csv \
-        --timeout 60 --flags --incremental-bmc
+        --timeout 60 --flags --legacy-bmc
 
 The script resolves each benchmark name by basename against benchmarks/bv
 (recursive), runs bitr under subprocess.run with a hard kill on timeout, and
@@ -80,7 +80,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=60,
                     help="per-benchmark wall-clock budget in seconds")
     ap.add_argument("--flags", nargs=argparse.REMAINDER, default=[],
-                    help="extra flags to pass to bitr (e.g. --incremental-bmc)")
+                    help="extra flags to pass to bitr (e.g. --legacy-bmc)")
     args = ap.parse_args()
 
     root = Path(args.root)

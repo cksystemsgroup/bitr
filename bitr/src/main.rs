@@ -35,7 +35,7 @@ fn main() {
         eprintln!("  --bound N    Maximum BMC bound (default: 100)");
         eprintln!("  --no-oracle  Disable external SMT oracle");
         eprintln!("  --verify     Cross-check every SAT/UNSAT against oracle; panic on mismatch");
-        eprintln!("  --incremental-bmc  Try incremental SAT BMC before the default BMC pipeline");
+        eprintln!("  --legacy-bmc Use substitution-based BMC instead of the default incremental SAT BMC");
         process::exit(1);
     }
 
@@ -45,7 +45,7 @@ fn main() {
     let mut max_bound: u32 = 100;
     let mut use_oracle = true;
     let mut verify_mode = false;
-    let mut incremental_bmc = false;
+    let mut legacy_bmc = false;
     let mut filename = None;
 
     let mut i = 1;
@@ -55,7 +55,7 @@ fn main() {
             "--stats" => print_stats = true,
             "--no-oracle" => use_oracle = false,
             "--verify" => verify_mode = true,
-            "--incremental-bmc" => incremental_bmc = true,
+            "--legacy-bmc" => legacy_bmc = true,
             "--timeout" => {
                 i += 1;
                 timeout_s = args[i].parse().unwrap_or(300.0);
@@ -120,7 +120,7 @@ fn main() {
         solve_smtlib2(&input, verbose, print_stats, solver_path.as_deref())
     } else {
         // BTOR2 mode
-        solve_btor2(&input, verbose, print_stats, solver_path.as_deref(), max_bound, timeout_s, verify_mode, incremental_bmc)
+        solve_btor2(&input, verbose, print_stats, solver_path.as_deref(), max_bound, timeout_s, verify_mode, legacy_bmc)
     };
 
     match overall_result {
@@ -235,7 +235,7 @@ fn solve_btor2(
     max_bound: u32,
     timeout_s: f64,
     verify_mode: bool,
-    incremental_bmc: bool,
+    legacy_bmc: bool,
 ) -> SolveResult {
     let mut model = match btor2::parse_btor2(input) {
         Ok(m) => m,
@@ -324,21 +324,32 @@ fn solve_btor2(
             }
         }
 
-        // Phase 2a (optional): Incremental SAT BMC if --incremental-bmc set.
-        // Fast SAT-finder for problems where the transition relation fits in
-        // CNF cleanly. On Unknown (encoding exceeded, or bound reached without
-        // a counterexample), fall through to the legacy BMC.
-        let kind_elapsed = phase1_start.elapsed().as_secs_f64();
-        let bmc_timeout = (timeout_s - kind_elapsed).max(1.0);
+        // Phase 2: BMC. Default path is incremental SAT BMC (CNF-based,
+        // avoids the term-growth blowup of substitution). `--legacy-bmc`
+        // selects the substitution-based fallback.
+        let remaining = (timeout_s - phase1_start.elapsed().as_secs_f64()).max(1.0);
 
-        if incremental_bmc {
-            // Incremental path gets up to half of the remaining budget; on
-            // Unknown we fall through to the legacy path with the remainder.
-            let ibmc_budget = (bmc_timeout * 0.5).max(1.0);
-            let ibmc_start = std::time::Instant::now();
+        if legacy_bmc {
+            let bmc_config = bmc::BmcConfig {
+                max_bound,
+                timeout_s: remaining,
+                verbose,
+                verify_mode,
+            };
+            bmc::bmc_check(
+                &bmc_config,
+                &mut lifted.tt,
+                &mut lifted.ct,
+                &mut lifted.bm,
+                &state_vars,
+                &lifted.bad_properties,
+                &lifted.constraints,
+                &input_vars,
+            )
+        } else {
             let ibmc_config = incremental_bmc::IncrementalBmcConfig {
                 max_bound,
-                timeout_s: ibmc_budget,
+                timeout_s: remaining,
                 verbose,
             };
             let ibmc_result = incremental_bmc::incremental_bmc_check(
@@ -355,33 +366,10 @@ fn solve_btor2(
                 eprintln!("bitr: incremental BMC = {:?} at depth {}",
                     ibmc_result.status, ibmc_result.depth_reached);
             }
-            // Only SAT from incremental BMC is conclusive here (its Unsat at
-            // a step is per-step, not unbounded-safety). SAT means a verified
-            // counterexample was found.
-            if ibmc_result.status == SolveResult::Sat {
-                return SolveResult::Sat;
-            }
-            let _ = ibmc_start;
+            // Incremental BMC's Unsat is per-step only; bound exhaustion is
+            // Unknown (Phase A1). Only Sat is a proof of reachability.
+            ibmc_result.status
         }
-
-        // Phase 2b: Legacy substitution-based BMC with all remaining budget.
-        let remaining = (timeout_s - phase1_start.elapsed().as_secs_f64()).max(1.0);
-        let bmc_config = bmc::BmcConfig {
-            max_bound,
-            timeout_s: remaining,
-            verbose,
-            verify_mode,
-        };
-        bmc::bmc_check(
-            &bmc_config,
-            &mut lifted.tt,
-            &mut lifted.ct,
-            &mut lifted.bm,
-            &state_vars,
-            &lifted.bad_properties,
-            &lifted.constraints,
-            &input_vars,
-        )
     } else {
         if verbose {
             eprintln!("bitr: combinational model, solving directly");
